@@ -1,0 +1,23 @@
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Environment / secrets
+.env
+.env.*
+
+# Editor / IDE
+.cursor/
+.vscode/
+
+# Data outputs
+data/output/
+
+# Python coverage / build
+htmlcov/
+.coverage
+dist/
+build/
+
+

@@ -1,0 +1,27 @@
+# Priority Rules for Lead Enrichment Engine
+# Rules are evaluated in order: Priority 4 → 3 → 2 → 1
+
+priority_4:
+  description: "Highest priority - Large consumption with both services"
+  conditions:
+    consumo_min: 300
+    requires_services: ["LUZ", "GAS"]
+
+priority_3:
+  description: "High priority - Medium-large consumption"
+  conditions:
+    - consumo_min: 200
+      requires_services: ["LUZ", "GAS"]
+    - consumo_min: 100
+
+priority_2:
+  description: "Medium priority - Moderate consumption"
+  conditions:
+    consumo_min: 70
+    consumo_max: 99
+
+priority_1:
+  description: "Low priority - Default for all other cases"
+  conditions:
+    default: true
+
