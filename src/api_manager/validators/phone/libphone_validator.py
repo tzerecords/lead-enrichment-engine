@@ -3,8 +3,25 @@ from __future__ import annotations
 from typing import Optional
 
 import phonenumbers
+from phonenumbers import number_type, PhoneNumberType
 
 from ...base import PhoneValidation, PhoneValidator
+
+
+# Map PhoneNumberType enum values to string names
+PHONE_TYPE_MAP = {
+    PhoneNumberType.FIXED_LINE: "FIXED_LINE",
+    PhoneNumberType.MOBILE: "MOBILE",
+    PhoneNumberType.FIXED_LINE_OR_MOBILE: "FIXED_LINE_OR_MOBILE",
+    PhoneNumberType.TOLL_FREE: "TOLL_FREE",
+    PhoneNumberType.PREMIUM_RATE: "PREMIUM_RATE",
+    PhoneNumberType.SHARED_COST: "SHARED_COST",
+    PhoneNumberType.VOIP: "VOIP",
+    PhoneNumberType.PERSONAL_NUMBER: "PERSONAL_NUMBER",
+    PhoneNumberType.PAGER: "PAGER",
+    PhoneNumberType.UAN: "UAN",
+    PhoneNumberType.VOICEMAIL: "VOICEMAIL",
+}
 
 
 class LibPhoneValidator(PhoneValidator):
@@ -33,15 +50,15 @@ class LibPhoneValidator(PhoneValidator):
             )
 
         valid = phonenumbers.is_valid_number(parsed)
-        number_type = phonenumbers.number_type(parsed)
-        type_name = phonenumbers.PhoneNumberType._VALUES_TO_NAMES.get(number_type, "UNKNOWN")
+        phone_type_enum = number_type(parsed)
+        type_str = PHONE_TYPE_MAP.get(phone_type_enum, "UNKNOWN")
 
         formatted = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
 
         return PhoneValidation(
             valid=valid,
             formatted=formatted,
-            type=type_name,
+            type=type_str,
             carrier=None,
             active=None,
             extra={"region": self.region},

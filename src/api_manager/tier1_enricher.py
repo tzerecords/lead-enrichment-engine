@@ -5,11 +5,10 @@ from typing import Dict, Any, List
 
 from .base import CIFResult, PhoneResult, PhoneValidation, BatchReport
 from .utils.logger import get_logger, log_event
-from .validators.cif.api_empresas import APIEmpresasCIFValidator
 from .validators.cif.borme_validator import BORMECIFValidator
 from .validators.cif.regex_validator import RegexCIFValidator
 from .validators.phone.libphone_validator import LibPhoneValidator
-from .enrichers.phone.google_places import GooglePlacesPhoneFinder
+from .enrichers.phone.google_places import GooglePlacesEnricher
 from .enrichers.phone.web_scraper import WebScraperPhoneFinder
 from src.utils.config_loader import load_yaml_config
 
@@ -27,30 +26,29 @@ class Tier1Enricher:
         tier1 = self.config.get("tier1", {})
         rate_limits = tier1.get("rate_limits", {})
 
-        # NOTE: api_keys.yaml is optional; empty keys mean calls will fail fast if used
+        # Load API keys (support both old and new format)
         try:
             api_keys = load_yaml_config("config/api_keys.yaml")
         except FileNotFoundError:
             api_keys = {}
 
-        api_empresas_key = api_keys.get("api_empresas", {}).get("api_key", "")
-        google_maps_key = api_keys.get("google_maps", {}).get("api_key", "")
-
-        api_empresas_limit = int(rate_limits.get("api_empresas", 2000))
-        google_places_limit = int(rate_limits.get("google_places", 10000))
-
-        # CIF validators
-        self.cif_primary = APIEmpresasCIFValidator(
-            api_key=api_empresas_key,
-            monthly_limit=api_empresas_limit,
+        # Support both formats: new (google_places_key) and old (google_maps.api_key)
+        google_places_key = (
+            api_keys.get("google_places_key")
+            or api_keys.get("google_maps", {}).get("api_key", "")
+            or ""
         )
-        self.cif_fallback = BORMECIFValidator()
-        self.cif_last_resort = RegexCIFValidator()
 
-        # Phone finders / validators
-        self.phone_finder = GooglePlacesPhoneFinder(
-            api_key=google_maps_key,
-            monthly_limit=google_places_limit,
+        google_places_limit = int(rate_limits.get("google_places", 200))
+
+        # CIF validators (primary: regex_local, fallback: borme)
+        self.cif_primary = RegexCIFValidator()
+        self.cif_fallback = BORMECIFValidator()
+
+        # Phone/company enrichers
+        self.google_places = GooglePlacesEnricher(
+            api_key=google_places_key,
+            daily_limit=google_places_limit,
         )
         self.phone_finder_fallback = WebScraperPhoneFinder()
         self.phone_validator = LibPhoneValidator(region="ES")
@@ -63,6 +61,7 @@ class Tier1Enricher:
         """Enrich a single lead dictionary.
 
         Expected input keys: CIF, NOMBRE_EMPRESA, CIUDAD, WEBSITE (best effort).
+        Returns enriched dict with columns from tier1_config.yaml.
         """
 
         cif = str(lead.get("CIF", "")).strip()
@@ -70,15 +69,14 @@ class Tier1Enricher:
         city = str(lead.get("CIUDAD", "")).strip() or None
         website = str(lead.get("WEBSITE", "")).strip() or None
 
-        enrichment_errors: List[str] = []
+        errors: List[str] = []
 
-        # 1) CIF validation waterfall
+        # 1) CIF validation waterfall (primary: regex_local, fallback: borme)
+        cif_result: CIFResult
         try:
             cif_result = self.cif_primary.validate(cif)
-            if not cif_result.valid and not cif_result.exists:
-                cif_result = self.cif_fallback.validate(cif)
             if not cif_result.valid:
-                cif_result = self.cif_last_resort.validate(cif)
+                cif_result = self.cif_fallback.validate(cif)
         except Exception as exc:  # pragma: no cover - defensive
             log_event(self.logger, 40, "CIF validation failed", {"cif": cif, "error": str(exc)})
             cif_result = CIFResult(
@@ -87,37 +85,65 @@ class Tier1Enricher:
                 razon_social=None,
                 source="error",
                 estado=None,
-                extra={"error": str(exc)},
+                extra={"error": str(exc), "format_ok": False},
             )
-            enrichment_errors.append(f"cif_error:{exc}")
+            errors.append(f"CIF_ERROR:{exc}")
 
-        # 2) Company name
-        razon_social = lead.get("RAZON_SOCIAL") or cif_result.razon_social
-        razon_social_source = cif_result.source if cif_result.razon_social else "input"
+        # Extract CIF metadata
+        cif_format_ok = cif_result.extra.get("format_ok", False) if cif_result.extra else False
+        cif_error = cif_result.extra.get("error") if cif_result.extra else None
+        if cif_error:
+            errors.append(f"CIF:{cif_error}")
 
-        # 3) Phone discovery waterfall
+        # 2) Company enrichment (Google Places for phone + razón social)
+        razon_social = lead.get("RAZON_SOCIAL") or lead.get("NOMBRE_EMPRESA", "")
+        razon_social_source = "input"
+        phone_result: PhoneResult
+        company_data: Dict[str, Any] = {}
+
         try:
-            phone_result = self.phone_finder.find(
-                company_name=company_name or (razon_social or ""),
-                address=city,
+            company_data = self.google_places.find_company(
+                company_name=company_name or razon_social or "",
+                city=city,
             )
-            if not phone_result.phone:
+
+            if company_data.get("error"):
+                error_msg = company_data.get("error", "UNKNOWN")
+                errors.append(f"GOOGLE_PLACES:{error_msg}")
+                # Try fallback web scraper for phone only
                 phone_result = self.phone_finder_fallback.find(
-                    company_name=company_name or (razon_social or ""),
+                    company_name=company_name or razon_social or "",
                     address=city,
                     website=website,
                 )
-        except Exception as exc:  # pragma: no cover - defensive
-            log_event(self.logger, 40, "Phone discovery failed", {"cif": cif, "error": str(exc)})
-            phone_result = PhoneResult(phone=None, confidence=0.0, source="error", extra={"error": str(exc)})
-            enrichment_errors.append(f"phone_error:{exc}")
+            else:
+                # Use Google Places data
+                phone = company_data.get("phone") or company_data.get("international_phone")
+                phone_result = PhoneResult(
+                    phone=phone,
+                    confidence=company_data.get("confidence", 0.0),
+                    source=company_data.get("source", "google_places"),
+                    extra={"error": None},
+                )
 
-        # 4) Phone validation
+                # Update razón social if Google has better data
+                google_name = company_data.get("name")
+                if google_name and google_name.strip():
+                    razon_social = google_name
+                    razon_social_source = "google_places"
+
+        except Exception as exc:  # pragma: no cover - defensive
+            log_event(self.logger, 40, "Company enrichment failed", {"cif": cif, "error": str(exc)})
+            phone_result = PhoneResult(phone=None, confidence=0.0, source="error", extra={"error": str(exc)})
+            errors.append(f"ENRICHMENT_ERROR:{exc}")
+
+        # 3) Phone validation
+        phone_validation: PhoneValidation
         if phone_result.phone:
             try:
                 phone_validation = self.phone_validator.validate(phone_result.phone)
             except Exception as exc:  # pragma: no cover - defensive
-                enrichment_errors.append(f"phone_validation_error:{exc}")
+                errors.append(f"PHONE_VALIDATION_ERROR:{exc}")
                 phone_validation = PhoneValidation(
                     valid=False,
                     formatted=None,
@@ -136,12 +162,13 @@ class Tier1Enricher:
                 extra=None,
             )
 
+        # Build enriched result
         enriched = dict(lead)
         enriched.update(
             {
+                "CIF": cif,
                 "CIF_VALID": cif_result.valid,
-                "CIF_EXISTS": cif_result.exists,
-                "CIF_STATUS": cif_result.estado or "UNKNOWN",
+                "CIF_FORMAT_OK": cif_format_ok,
                 "RAZON_SOCIAL": razon_social,
                 "RAZON_SOCIAL_SOURCE": razon_social_source,
                 "PHONE": phone_validation.formatted or phone_result.phone,
@@ -149,7 +176,7 @@ class Tier1Enricher:
                 "PHONE_TYPE": phone_validation.type,
                 "PHONE_SOURCE": phone_result.source,
                 "ENRICHMENT_TIMESTAMP": self._now_iso(),
-                "ENRICHMENT_ERRORS": ",".join(enrichment_errors) if enrichment_errors else "",
+                "ERRORS": ",".join(errors) if errors else "",
             }
         )
 
@@ -176,8 +203,8 @@ class Tier1Enricher:
                 cif_validated += 1
             if enriched.get("PHONE"):
                 phone_found += 1
-            if enriched.get("ENRICHMENT_ERRORS"):
-                errors.append(enriched["ENRICHMENT_ERRORS"])
+            if enriched.get("ERRORS"):
+                errors.append(enriched["ERRORS"])
 
         return BatchReport(
             total=total,

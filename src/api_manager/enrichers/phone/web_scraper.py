@@ -16,11 +16,37 @@ _PHONE_REGEX = re.compile(
 )
 
 
+def _normalize_url(url: str) -> str:
+    """Normalize URL by adding https:// scheme if missing.
+
+    Args:
+        url: URL string (may be missing scheme).
+
+    Returns:
+        Normalized URL with https:// scheme.
+
+    Examples:
+        "www.endesa.es" -> "https://www.endesa.es"
+        "endesa.es" -> "https://endesa.es"
+        "https://endesa.es" -> "https://endesa.es" (no change)
+    """
+    url = url.strip()
+    if not url:
+        return url
+
+    # If already has scheme, return as-is
+    if url.startswith(("http://", "https://")):
+        return url
+
+    # Add https:// prefix
+    return f"https://{url}"
+
+
 class WebScraperPhoneFinder:
     """Fallback phone finder using the company website.
 
     Expects the lead to provide a ``WEBSITE``/URL; if not present, this finder
-    will usually return no result.
+    will usually return no result. Automatically adds https:// if scheme is missing.
     """
 
     source_name = "web_scraper"
@@ -31,7 +57,12 @@ class WebScraperPhoneFinder:
 
     @with_retry((requests.RequestException,))
     def _fetch(self, url: str) -> str:
-        resp = requests.get(url, timeout=self.timeout, headers={"User-Agent": "Tier1Enricher/1.0"})
+        normalized_url = _normalize_url(url)
+        resp = requests.get(
+            normalized_url,
+            timeout=self.timeout,
+            headers={"User-Agent": "Tier1Enricher/1.0"},
+        )
         resp.raise_for_status()
         return resp.text
 
