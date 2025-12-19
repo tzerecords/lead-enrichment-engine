@@ -1,0 +1,9 @@
+tier2_enrichment:
+  email_research:
+    enabled: true
+    two_phase_strategy: true
+    phase1_query_template: "{company} {city} {website} razón social oficial business information"
+    phase2_query_template: "{razon_social_oficial} {city} email contact director owner CEO gerente site:linkedin.com OR site:{website}"
+    skip_phase2_if_company_not_found: true
+    max_retries: 2
+    timeout_seconds: 15
