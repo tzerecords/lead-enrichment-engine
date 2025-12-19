@@ -10,7 +10,7 @@ sys.path.insert(0, str(project_root))
 
 from src.utils.logger import setup_logger
 from src.core.excel_processor import read_excel, write_excel
-from src.core.orchestrator import run_pipeline
+from src.core.orchestrator import run_pipeline, run_tier2_enrichment
 
 logger = setup_logger()
 
@@ -48,6 +48,16 @@ def main() -> None:
         action="store_true",
         help="Run only Tier1 enrichment (skip priority_engine)",
     )
+    parser.add_argument(
+        "--tier2",
+        action="store_true",
+        help="Enable Tier2 enrichment for priority>=2 leads (emails, contacts, LinkedIn)",
+    )
+    parser.add_argument(
+        "--research-emails",
+        action="store_true",
+        help="Enable Tavily+OpenAI email research for priority>=3 leads (requires --tier2)",
+    )
 
     args = parser.parse_args()
 
@@ -73,6 +83,20 @@ def main() -> None:
             config_path="config/tier1_config.yaml",
         )
 
+        # Run Tier2 enrichment if flag is set
+        tier2_report = None
+        if args.tier2:
+            enable_research = args.research_emails
+            if enable_research:
+                logger.info("Starting Tier2 enrichment with email research for priority>=2 leads...")
+            else:
+                logger.info("Starting Tier2 enrichment for priority>=2 leads...")
+            df_result, tier2_report = run_tier2_enrichment(
+                df=df_result,
+                tier2_config_path="config/tier2_config.yaml",
+                enable_email_research=enable_research,
+            )
+
         # Generate output path
         if args.output:
             output_path = Path(args.output)
@@ -89,6 +113,21 @@ def main() -> None:
         logger.info(f"Total rows processed (non-red): {batch_report.total}")
         logger.info(f"CIF validated: {batch_report.cif_validated}/{batch_report.total}")
         logger.info(f"Phone found: {batch_report.phone_found}/{batch_report.total}")
+
+        if tier2_report:
+            logger.info("--- Tier2 Statistics ---")
+            logger.info(f"Tier2 leads processed: {tier2_report.total}")
+            logger.info(f"Emails found: {tier2_report.emails_found}/{tier2_report.total}")
+            if args.research_emails:
+                logger.info(f"Emails researched: {tier2_report.emails_researched}/{tier2_report.total}")
+            logger.info(f"LinkedIn URLs found: {tier2_report.linkedin_found}/{tier2_report.total}")
+            logger.info(f"Contacts found: {tier2_report.contacts_found}/{tier2_report.total}")
+            # Estimate cost (GPT-4o-mini: $0.15 per 1M input tokens, $0.60 per 1M output tokens)
+            input_cost = (tier2_report.total_openai_tokens * 0.9) / 1_000_000 * 0.15
+            output_cost = (tier2_report.total_openai_tokens * 0.1) / 1_000_000 * 0.60
+            total_cost = input_cost + output_cost
+            logger.info(f"OpenAI tokens used: {tier2_report.total_openai_tokens:,}")
+            logger.info(f"Estimated OpenAI cost: ${total_cost:.4f}")
 
     except Exception as e:
         logger.error(f"Error processing file: {e}", exc_info=True)

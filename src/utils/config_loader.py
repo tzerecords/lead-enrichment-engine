@@ -2,7 +2,7 @@
 
 import yaml
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Union
 import logging
 
 logger = logging.getLogger("lead_enrichment")
@@ -40,6 +40,30 @@ def load_yaml(filepath: Path) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Error loading YAML file {filepath}: {e}")
         raise
+
+
+def load_yaml_config(filepath: Union[str, Path]) -> Dict[str, Any]:
+    """Load YAML file from string path or Path object.
+
+    This is a convenience wrapper around load_yaml() that accepts both
+    string paths and Path objects.
+
+    Args:
+        filepath: Path to YAML file (string or Path).
+
+    Returns:
+        Dictionary with YAML contents.
+
+    Raises:
+        FileNotFoundError: If file doesn't exist.
+        yaml.YAMLError: If YAML is malformed.
+    """
+    path = Path(filepath) if isinstance(filepath, str) else filepath
+    # If relative path, resolve relative to project root
+    if not path.is_absolute():
+        project_root = Path(__file__).parent.parent.parent
+        path = project_root / path
+    return load_yaml(path)
 
 
 def load_priority_rules() -> Dict[str, Any]:

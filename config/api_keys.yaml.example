@@ -4,3 +4,5 @@
 
 google_places_key: "YOUR_GOOGLE_PLACES_API_KEY_HERE"
 api_empresas_key: null  # Optional: For paid BORME/CIF validation service
+openai_api_key: "YOUR_OPENAI_API_KEY_HERE"  # For Tier2 email/contact extraction
+tavily_api_key: "YOUR_TAVILY_API_KEY_HERE"  # For email research (Tier2)
