@@ -20,3 +20,11 @@ htmlcov/
 .coverage
 dist/
 build/
+# Temporal test files
+test_output.csv
+test_output.report.json
+tier1_rate_limits.json
+*.pyc
+__pycache__/
+.venv/
+
