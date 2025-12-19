@@ -10,7 +10,7 @@ sys.path.insert(0, str(project_root))
 
 from src.utils.logger import setup_logger
 from src.core.excel_processor import read_excel, write_excel
-from src.core.priority_engine import PriorityEngine
+from src.core.orchestrator import run_pipeline
 
 logger = setup_logger()
 
@@ -36,16 +36,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Lead Enrichment Engine - Process Excel leads and calculate priorities"
     )
-    parser.add_argument(
-        "input_file",
-        type=str,
-        help="Path to input Excel file",
-    )
+    parser.add_argument("input_file", type=str, help="Path to input Excel file")
     parser.add_argument(
         "--output",
         type=str,
         default=None,
-        help="Path to output Excel file (default: data/output/LIMPIO_<input_name>.xlsx)",
+        help="Path to output Excel file (default: LIMPIO_<input_name>.xlsx)",
+    )
+    parser.add_argument(
+        "--tier1-only",
+        action="store_true",
+        help="Run only Tier1 enrichment (skip priority_engine)",
     )
 
     args = parser.parse_args()
@@ -65,22 +66,12 @@ def main() -> None:
         logger.info("Reading Excel file...")
         df, metadata = read_excel(input_path)
 
-        # Filter out red rows for processing (but keep them marked)
-        df_process = df[~df.get("_IS_RED_ROW", False)].copy()
-        logger.info(f"Processing {len(df_process)} rows (skipping {len(df) - len(df_process)} red rows)")
-
-        # Calculate priorities
-        logger.info("Calculating priorities...")
-        priority_engine = PriorityEngine()
-        priorities = priority_engine.calculate_priorities(df_process)
-
-        # Add PRIORITY column to DataFrame
-        df["PRIORITY"] = None
-        df.loc[~df.get("_IS_RED_ROW", False), "PRIORITY"] = priorities.values
-
-        # Remove temporary _IS_RED_ROW column before writing
-        if "_IS_RED_ROW" in df.columns:
-            df = df.drop(columns=["_IS_RED_ROW"])
+        # Run core pipeline (priority + Tier1 enrichment)
+        df_result, batch_report = run_pipeline(
+            df=df,
+            tier1_only=args.tier1_only,
+            config_path="config/tier1_config.yaml",
+        )
 
         # Generate output path
         if args.output:
@@ -90,12 +81,14 @@ def main() -> None:
 
         # Write output Excel
         logger.info(f"Writing output to: {output_path}")
-        write_excel(df, metadata, output_path, preserve_format=True)
+        write_excel(df_result, metadata, output_path, preserve_format=True)
 
+        # Log stats
         logger.info("✅ Processing complete!")
         logger.info(f"Output file: {output_path}")
-        logger.info(f"Total rows processed: {len(df_process)}")
-        logger.info(f"Red rows skipped: {len(df) - len(df_process)}")
+        logger.info(f"Total rows processed (non-red): {batch_report.total}")
+        logger.info(f"CIF validated: {batch_report.cif_validated}/{batch_report.total}")
+        logger.info(f"Phone found: {batch_report.phone_found}/{batch_report.total}")
 
     except Exception as e:
         logger.error(f"Error processing file: {e}", exc_info=True)

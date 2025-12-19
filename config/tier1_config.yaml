@@ -1,0 +1,35 @@
+tier1:
+  cif:
+    primary: "regex_local"
+    fallback: "borme"
+  
+  phone:
+    finder: "google_places"
+    finder_fallback: "web_scraper"
+    validator: "libphonenumber"
+  
+  razon_social:
+    primary: "google_places"
+    fallback: "borme"
+  
+  rate_limits:
+    google_places: 200
+    alert_threshold: 0.8
+  
+  retries:
+    max_attempts: 3
+    backoff_factor: 2
+  
+  output:
+    columns:
+      - CIF
+      - CIF_VALID
+      - CIF_FORMAT_OK
+      - RAZON_SOCIAL
+      - RAZON_SOCIAL_SOURCE
+      - PHONE
+      - PHONE_VALID
+      - PHONE_TYPE
+      - PHONE_SOURCE
+      - ENRICHMENT_TIMESTAMP
+      - ERRORS

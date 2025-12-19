@@ -6,6 +6,7 @@ __pycache__/
 # Environment / secrets
 .env
 .env.*
+config/api_keys.yaml
 
 # Editor / IDE
 .cursor/
@@ -19,5 +20,3 @@ htmlcov/
 .coverage
 dist/
 build/
-
-
