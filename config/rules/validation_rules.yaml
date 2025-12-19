@@ -1,0 +1,36 @@
+cif_validation:
+  patterns:
+    cif: "^[A-W]\\d{8}$"
+    nif: "^\\d{8}[A-Z]$"
+    nie: "^[XYZ]\\d{7}[A-Z]$"
+  
+  entity_types:
+    A: "Sociedad Anónima"
+    B: "Sociedad Limitada"
+    C: "Sociedad Colectiva"
+    D: "Sociedad Comanditaria"
+    E: "Comunidad de Bienes"
+    F: "Sociedad Cooperativa"
+    G: "Asociación/Fundación"
+    H: "Comunidad de Propietarios"
+    J: "Sociedad Civil"
+    N: "Entidad Extranjera"
+    P: "Corporación Local"
+    Q: "Organismo Autónomo"
+    R: "Congregación Religiosa"
+    S: "Órgano de la Administración"
+    U: "Unión Temporal de Empresas"
+    V: "Otros tipos no definidos"
+    W: "Establecimiento permanente"
+
+phone_validation:
+  spain:
+    mobile_prefixes: ["6", "7"]
+    landline_prefixes: ["8", "9"]
+    special_prefixes: ["800", "900", "901", "902", "905"]
+    length: 9
+    international_prefix: "+34"
+
+company_enrichment:
+  confidence_threshold: 0.5  # Below this = manual review
+  search_timeout: 10  # seconds
