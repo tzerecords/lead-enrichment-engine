@@ -17,6 +17,64 @@ class PriorityEngine:
         self.rules = load_priority_rules()
         logger.info("Priority engine initialized")
 
+    def _get_consumo(self, row: pd.Series) -> Optional[float]:
+        """Get consumption value from row, trying multiple column names.
+
+        Tries CONSUMO_MWH (ideal) and falls back to CONSUMO (real Excel column).
+
+        Args:
+            row: DataFrame row.
+
+        Returns:
+            Consumption value as float, or None if missing/invalid.
+        """
+        raw = row.get("CONSUMO_MWH")
+        if raw is None or (isinstance(raw, float) and pd.isna(raw)) or raw == "":
+            raw = row.get("CONSUMO")
+
+        if raw is None or raw == "" or (isinstance(raw, float) and pd.isna(raw)):
+            return None
+
+        try:
+            return float(raw)
+        except (ValueError, TypeError):
+            return None
+
+    def _get_service_value(self, row: pd.Series, service: str) -> bool:
+        """Check if a given service (LUZ/GAS) is present in the row.
+
+        Tries dedicated columns (LUZ/GAS) and falls back to 'L/V' combined column.
+
+        Args:
+            row: DataFrame row.
+            service: Service name (e.g., "LUZ", "GAS").
+
+        Returns:
+            True if service appears to be present.
+        """
+        service = service.upper()
+
+        # 1) Direct column (LUZ / GAS)
+        if service in row.index:
+            val = row[service]
+            return not (pd.isna(val) or val == "" or val is False)
+
+        # 2) Fallback: combined 'L/V' column from Alejandro's Excel
+        if "L/V" in row.index:
+            lv_raw = row["L/V"]
+            if pd.isna(lv_raw):
+                return False
+            lv = str(lv_raw).upper()
+
+            if service == "LUZ":
+                # Consider L or LUZ as indicating electricity service
+                return "L" in lv or "LUZ" in lv
+            if service == "GAS":
+                # Consider G/GAS/V as indicating gas/other combustible service
+                return "G" in lv or "GAS" in lv or "V" in lv
+
+        return False
+
     def _check_services(self, row: pd.Series, required_services: list) -> bool:
         """Check if row has all required services.
 
@@ -28,12 +86,7 @@ class PriorityEngine:
             True if all required services are present and truthy.
         """
         for service in required_services:
-            service_col = service.upper()
-            if service_col not in row.index:
-                return False
-            # Check if service value is truthy (not NaN, not empty, not False)
-            service_value = row[service_col]
-            if pd.isna(service_value) or service_value == "" or service_value == False:
+            if not self._get_service_value(row, service):
                 return False
         return True
 
@@ -50,13 +103,8 @@ class PriorityEngine:
         consumo_min = rule.get("consumo_min", float("inf"))
         required_services = rule.get("requires_services", [])
 
-        consumo = row.get("CONSUMO_MWH", None)
-        if pd.isna(consumo) or consumo == "":
-            return False
-
-        try:
-            consumo_float = float(consumo)
-        except (ValueError, TypeError):
+        consumo_float = self._get_consumo(row)
+        if consumo_float is None:
             return False
 
         if consumo_float < consumo_min:
@@ -80,13 +128,8 @@ class PriorityEngine:
         if not isinstance(rule, list):
             rule = [rule]
 
-        consumo = row.get("CONSUMO_MWH", None)
-        if pd.isna(consumo) or consumo == "":
-            return False
-
-        try:
-            consumo_float = float(consumo)
-        except (ValueError, TypeError):
+        consumo_float = self._get_consumo(row)
+        if consumo_float is None:
             return False
 
         for condition in rule:
@@ -117,13 +160,8 @@ class PriorityEngine:
         consumo_min = rule.get("consumo_min", 70)
         consumo_max = rule.get("consumo_max", 99)
 
-        consumo = row.get("CONSUMO_MWH", None)
-        if pd.isna(consumo) or consumo == "":
-            return False
-
-        try:
-            consumo_float = float(consumo)
-        except (ValueError, TypeError):
+        consumo_float = self._get_consumo(row)
+        if consumo_float is None:
             return False
 
         return consumo_min <= consumo_float <= consumo_max
