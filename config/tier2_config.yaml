@@ -1,0 +1,26 @@
+tier2:
+  openai:
+    model: "gpt-4o-mini"
+    max_tokens: 4000
+    max_output_tokens: 500
+    temperature: 0.1
+
+  scraper:
+    timeout: 10
+    max_redirects: 5
+
+  linkedin:
+    timeout: 15
+
+  email:
+    dns_timeout: 5.0
+    generic_emails:
+      - info
+      - contact
+      - contacto
+      - admin
+      - noreply
+      - support
+      - help
+      - ventas
+      - comercial
