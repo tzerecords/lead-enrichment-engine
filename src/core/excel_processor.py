@@ -3,6 +3,7 @@
 import logging
 from pathlib import Path
 from typing import Tuple, Dict, Any, List
+from copy import copy
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
@@ -160,12 +161,25 @@ def read_excel(filepath: Path) -> Tuple[pd.DataFrame, Dict[str, Any]]:
 
     logger.info(f"Read {len(df)} rows, {len(red_df_indices)} marked as red")
 
+    # Ensure filepath is a Path object for consistency
+    filepath_obj = Path(filepath) if not isinstance(filepath, Path) else filepath
+    
     metadata = {
         "red_row_indices": red_row_indices,
         "red_df_indices": red_df_indices,
         "original_columns": list(df.columns),
-        "filepath": filepath,
+        "filepath": str(filepath_obj),  # Store as string for JSON serialization compatibility
     }
+    
+    logger.debug(f"Created metadata with filepath: {metadata['filepath']}")
+    logger.debug(f"Filepath exists: {filepath_obj.exists()}")
+    
+    # Debug logging for metadata (workbook_context equivalent)
+    logger.info(f"DEBUG read_excel: returning metadata with keys: {metadata.keys() if metadata else 'None'}")
+    logger.info(f"DEBUG read_excel: metadata type: {type(metadata)}")
+    logger.info(f"DEBUG read_excel: metadata is None? {metadata is None}")
+    if metadata is not None:
+        logger.info(f"DEBUG read_excel: metadata keys: {metadata.keys() if isinstance(metadata, dict) else 'NOT A DICT'}")
 
     return df, metadata
 
@@ -189,12 +203,42 @@ def write_excel(
     # Ensure output directory exists
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Debug logging: verify metadata structure (workbook_context equivalent)
+    logger.info(f"DEBUG write_excel: metadata type: {type(metadata)}")
+    logger.info(f"DEBUG write_excel: metadata value: {metadata}")
+    logger.info(f"DEBUG write_excel: metadata is None? {metadata is None}")
+    if metadata is not None:
+        logger.info(f"DEBUG write_excel: metadata keys: {metadata.keys() if isinstance(metadata, dict) else 'NOT A DICT'}")
+    
+    # Additional debug logging
+    logger.debug(f"Metadata keys: {list(metadata.keys()) if metadata else 'None'}")
+    logger.debug(f"Metadata type: {type(metadata)}")
+    if metadata:
+        logger.debug(f"Metadata has 'filepath': {'filepath' in metadata}")
+        if "filepath" in metadata:
+            logger.debug(f"Original filepath: {metadata['filepath']}")
+            logger.debug(f"Original filepath exists: {Path(metadata['filepath']).exists() if metadata['filepath'] else 'N/A'}")
+
     if preserve_format and "filepath" in metadata:
         # Load original workbook to copy formatting
         original_path = metadata["filepath"]
+        # Convert to Path if it's a string
+        original_path_obj = Path(original_path) if isinstance(original_path, str) else original_path
+        
+        logger.debug(f"Attempting to load original workbook from: {original_path}")
+        logger.debug(f"Original path type: {type(original_path)}")
+        logger.debug(f"Original path exists: {original_path_obj.exists() if original_path_obj else 'N/A'}")
+        
         try:
+            if not original_path or not original_path_obj.exists():
+                raise FileNotFoundError(f"Original filepath in metadata is invalid or doesn't exist: {original_path}")
+            
+            # Use Path object for load_workbook
+            original_path = original_path_obj
+            
             wb_original = load_workbook(original_path)
             ws_original = wb_original.active
+            logger.debug(f"Loaded original workbook: max_row={ws_original.max_row}, max_column={ws_original.max_column}")
 
             # Create new workbook
             wb_new = load_workbook(original_path)
@@ -226,48 +270,42 @@ def write_excel(
                             pass  # Skip if font copy fails
 
             # Write data rows (skip red rows)
-            df_filtered = df[~df.get("_IS_RED_ROW", False)].copy()
-            if "_IS_RED_ROW" in df_filtered.columns:
+            # Filter out red rows if the column exists
+            if "_IS_RED_ROW" in df.columns:
+                df_filtered = df[df["_IS_RED_ROW"] == False].copy()
                 df_filtered = df_filtered.drop(columns=["_IS_RED_ROW"])
+            else:
+                df_filtered = df.copy()
+            
+            # Reset index para iterar secuencialmente
+            df_filtered = df_filtered.reset_index(drop=True)
 
-            # Map DataFrame indices to original Excel row numbers
-            # df.index contains original DataFrame indices (0-based)
-            # Excel rows are 1-based, and row 1 is header
             excel_row = 2  # Start at row 2 (after header)
-            for df_idx, (original_df_idx, row_data) in enumerate(df_filtered.iterrows()):
+            original_columns_count = len(metadata.get("original_columns", []))
+            
+            for row_idx in range(len(df_filtered)):
+                row_data = df_filtered.iloc[row_idx]
+                
                 for col_idx, value in enumerate(row_data, start=1):
                     cell = ws_new.cell(row=excel_row, column=col_idx)
                     cell.value = value
-
-                    # Map to original Excel row: original_df_idx + 2
-                    # (original_df_idx is 0-based DataFrame index, +1 for header, +1 for 1-based Excel)
-                    original_excel_row = original_df_idx + 2
-                    if (
-                        original_excel_row <= ws_original.max_row
-                        and col_idx <= ws_original.max_column
-                    ):
-                        orig_cell = ws_original.cell(
-                            row=original_excel_row, column=col_idx
-                        )
+                    
+                    # Copy format from FIRST data row (row 2) of original as template
+                    # Solo para columnas originales (no las nuevas que agregamos)
+                    if col_idx <= original_columns_count:
                         try:
-                            if orig_cell.fill and orig_cell.fill.patternType:
-                                cell.fill = PatternFill(
-                                    start_color=orig_cell.fill.start_color,
-                                    end_color=orig_cell.fill.end_color,
-                                    fill_type=orig_cell.fill.fill_type
-                                )
-                        except Exception:
-                            pass  # Skip if fill copy fails
-                        try:
-                            if orig_cell.font:
-                                cell.font = orig_cell.font.copy()
-                        except Exception:
-                            pass  # Skip if font copy fails
-                        try:
-                            if orig_cell.alignment:
-                                cell.alignment = orig_cell.alignment.copy()
-                        except Exception:
-                            pass  # Skip if alignment copy fails
+                            orig_cell = ws_original.cell(row=2, column=col_idx)  # Siempre usar row 2 como template
+                            
+                            # Copy formatting
+                            if orig_cell.has_style:
+                                cell.font = copy(orig_cell.font)
+                                cell.fill = copy(orig_cell.fill)
+                                cell.border = copy(orig_cell.border)
+                                cell.alignment = copy(orig_cell.alignment)
+                                cell.number_format = orig_cell.number_format
+                        except Exception as e:
+                            logger.debug(f"Could not copy format for col {col_idx}: {e}")
+                
                 excel_row += 1
 
             wb_original.close()
@@ -276,20 +314,29 @@ def write_excel(
             logger.info(f"Excel file written with format preservation: {output_path}")
 
         except Exception as e:
+            import traceback
+            logger.error(f"DEBUG write_excel: Exception type: {type(e)}")
+            logger.error(f"DEBUG write_excel: Exception message: {e}")
+            logger.error(f"DEBUG write_excel: Exception args: {e.args}")
+            logger.error(f"DEBUG write_excel: Full traceback:\n{traceback.format_exc()}")
+            logger.error(f"DEBUG write_excel: Exception repr: {repr(e)}")
             logger.warning(
                 f"Error preserving format, falling back to simple write: {e}"
             )
             # Fallback to simple pandas write
-            df_filtered = df.copy()
-            if "_IS_RED_ROW" in df_filtered.columns:
-                df_filtered = df_filtered[~df_filtered["_IS_RED_ROW"]].copy()
+            if "_IS_RED_ROW" in df.columns:
+                df_filtered = df[df["_IS_RED_ROW"] == False].copy()
                 df_filtered = df_filtered.drop(columns=["_IS_RED_ROW"])
+            else:
+                df_filtered = df.copy()
             df_filtered.to_excel(output_path, index=False, engine="openpyxl")
     else:
         # Simple write without format preservation
-        df_filtered = df[~df.get("_IS_RED_ROW", False)].copy()
-        if "_IS_RED_ROW" in df_filtered.columns:
+        if "_IS_RED_ROW" in df.columns:
+            df_filtered = df[df["_IS_RED_ROW"] == False].copy()
             df_filtered = df_filtered.drop(columns=["_IS_RED_ROW"])
+        else:
+            df_filtered = df.copy()
         df_filtered.to_excel(output_path, index=False, engine="openpyxl")
         logger.info(f"Excel file written (simple mode): {output_path}")
 

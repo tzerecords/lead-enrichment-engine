@@ -10,7 +10,7 @@ sys.path.insert(0, str(project_root))
 
 from src.utils.logger import setup_logger
 from src.core.excel_processor import read_excel, write_excel
-from src.core.orchestrator import run_pipeline, run_tier2_enrichment
+from src.core.orchestrator import run_pipeline, run_tier2_enrichment, run_tier3_and_validation
 
 logger = setup_logger()
 
@@ -58,6 +58,11 @@ def main() -> None:
         action="store_true",
         help="Enable Tavily+OpenAI email research for priority>=3 leads (requires --tier2)",
     )
+    parser.add_argument(
+        "--tier3",
+        action="store_true",
+        help="Enable Tier3 enrichment + validation + scoring (WEBSITE, CNAE, batch validation, scoring)",
+    )
 
     args = parser.parse_args()
 
@@ -97,6 +102,11 @@ def main() -> None:
                 enable_email_research=enable_research,
             )
 
+        # Run Tier3 enrichment, validation, and scoring if flag is set
+        if args.tier3:
+            logger.info("Starting Tier3 enrichment + validation + scoring...")
+            df_result = run_tier3_and_validation(df_result, enable_tier3=True)
+
         # Generate output path
         if args.output:
             output_path = Path(args.output)
@@ -128,6 +138,20 @@ def main() -> None:
             total_cost = input_cost + output_cost
             logger.info(f"OpenAI tokens used: {tier2_report.total_openai_tokens:,}")
             logger.info(f"Estimated OpenAI cost: ${total_cost:.4f}")
+
+        if args.tier3:
+            logger.info("--- Tier3 Statistics ---")
+            total_rows = len(df_result)
+            websites_enriched = df_result["WEBSITE"].notna().sum() if "WEBSITE" in df_result.columns else 0
+            cnae_enriched = df_result["CNAE"].notna().sum() if "CNAE" in df_result.columns else 0
+            emails_valid = df_result["EMAIL_VALID"].sum() if "EMAIL_VALID" in df_result.columns else 0
+            phones_valid = df_result["PHONE_VALID"].sum() if "PHONE_VALID" in df_result.columns else 0
+            high_quality = (df_result["DATA_QUALITY"] == "High").sum() if "DATA_QUALITY" in df_result.columns else 0
+            logger.info(f"Websites enriched: {websites_enriched}/{total_rows}")
+            logger.info(f"CNAE enriched: {cnae_enriched}/{total_rows}")
+            logger.info(f"Valid emails: {emails_valid}/{total_rows}")
+            logger.info(f"Valid phones: {phones_valid}/{total_rows}")
+            logger.info(f"High quality leads: {high_quality}/{total_rows}")
 
     except Exception as e:
         logger.error(f"Error processing file: {e}", exc_info=True)

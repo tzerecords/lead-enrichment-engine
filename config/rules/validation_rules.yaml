@@ -34,3 +34,57 @@ phone_validation:
 company_enrichment:
   confidence_threshold: 0.5  # Below this = manual review
   search_timeout: 10  # seconds
+
+email:
+  column: "EMAIL"
+  syntax_regex: "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+  mx_check:
+    enabled: true
+    timeout: 2.0
+    retries: 1
+
+phone:
+  column: "TELEFONO"
+  country_code: "+34"
+  min_length: 9
+  max_length: 15
+  allowed_prefixes: ["6", "7", "8", "9"]
+
+cif:
+  column: "CIF"
+  revalidation:
+    enabled: true
+    strategy: "relaxed"  # or "strict"
+
+scoring:
+  completeness:
+    fields:
+      CIF: 15
+      RAZON_SOCIAL: 10
+      TELEFONO: 15
+      EMAIL: 20
+      WEBSITE: 15
+      CNAE: 25
+    min_percent_for_high: 80
+    min_percent_for_medium: 50
+
+  confidence:
+    sources:
+      email_mx: 25
+      email_syntax_only: 10
+      phone_normalized: 15
+      website_validated: 15
+      cnae_official_register: 25
+      cnae_inferred: 10
+    min_for_high: 70
+    min_for_medium: 40
+
+  quality:
+    high:
+      min_completeness: 80
+      min_confidence: 70
+    medium:
+      min_completeness: 50
+      min_confidence: 40
+    low:
+      default: true

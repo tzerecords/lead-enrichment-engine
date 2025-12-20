@@ -7,3 +7,26 @@ tier2_enrichment:
     skip_phase2_if_company_not_found: true
     max_retries: 2
     timeout_seconds: 15
+
+tier3:
+  website:
+    enabled: true
+    query_template: "{razon_social} {cif}"
+    max_results: 3
+    http_timeout: 3.0
+    accepted_status_codes: [200, 301, 302, 307, 308]
+    domains_blacklist:
+      - "facebook.com"
+      - "linkedin.com"
+      - "instagram.com"
+      - "twitter.com"
+      - "x.com"
+      - "youtube.com"
+  
+  cnae:
+    enabled: true
+    query_template: "{razon_social} {cif} CNAE"
+    max_results: 3
+    preferred_sources:
+      - "chamber_of_commerce"
+      - "official_register"

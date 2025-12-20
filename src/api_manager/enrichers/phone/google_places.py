@@ -62,7 +62,7 @@ class GooglePlacesEnricher:
                 url,
                 json=payload,
                 headers=self._get_headers(),
-                timeout=10,
+                timeout=5,  # Maximum 5 seconds
             )
             response.raise_for_status()
             data = response.json()
@@ -99,7 +99,7 @@ class GooglePlacesEnricher:
         }
 
         try:
-            response = requests.get(url, headers=headers, timeout=10)
+            response = requests.get(url, headers=headers, timeout=5)  # Maximum 5 seconds
             response.raise_for_status()
             return response.json()
         except requests.RequestException as exc:

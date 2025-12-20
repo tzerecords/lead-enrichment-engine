@@ -9,9 +9,15 @@ from src.core.priority_engine import PriorityEngine
 from src.api_manager.tier1_enricher import Tier1Enricher
 from src.api_manager.base import BatchReport
 from src.enrichers.tier2_enricher import Tier2Enricher, Tier2BatchReport
+from src.enrichers.tier3_enricher import Tier3Enricher
 from src.tier1.cif_validator import CifValidator
 from src.tier1.phone_validator import PhoneValidator
+from src.validators.email_batch_validator import validate_all_emails
+from src.validators.phone_batch_validator import validate_all_phones
+from src.validators.cif_batch_validator import revalidate_cifs
+from src.core.scoring_engine import ScoringEngine
 from src.utils.logger import setup_logger
+from src.utils.config_loader import load_yaml_config
 
 logger = setup_logger()
 
@@ -257,3 +263,72 @@ def run_tier2_enrichment(
                 df_result.loc[idx, "OBSERVACIONES"] = new_obs
 
     return df_result, tier2_report
+
+
+def run_tier3_and_validation(
+    df: pd.DataFrame,
+    enable_tier3: bool = True,
+) -> pd.DataFrame:
+    """Run Tier3 enrichment, batch validation, and scoring.
+
+    Pipeline:
+        1. Tier3 enrichment (WEBSITE, CNAE for empty fields only)
+        2. Batch email validation (all emails)
+        3. Batch phone validation (all phones)
+        4. CIF revalidation (failed CIFs only)
+        5. Scoring (completeness, confidence, quality)
+
+    Args:
+        df: DataFrame after Tier2 enrichment.
+        enable_tier3: Whether to run Tier3 enrichment (default: True).
+
+    Returns:
+        DataFrame with Tier3 enrichment, validation flags, and scoring columns.
+    """
+    df_result = df.copy()
+
+    # Load configs
+    enrichment_rules = load_yaml_config("config/rules/enrichment_rules.yaml")
+    validation_rules = load_yaml_config("config/rules/validation_rules.yaml")
+
+    # 1) Tier3 enrichment
+    if enable_tier3:
+        logger.info("Running Tier3 enrichment (WEBSITE, CNAE)...")
+        tier3_rules = enrichment_rules.get("tier3", {})
+        tier3_enricher = Tier3Enricher(rules=tier3_rules)
+        df_result = tier3_enricher.process_missing_only(df_result)
+    else:
+        logger.info("Tier3 enrichment skipped")
+        # Initialize Tier3 columns if not exist
+        if "WEBSITE" not in df_result.columns:
+            df_result["WEBSITE"] = None
+        if "CNAE" not in df_result.columns:
+            df_result["CNAE"] = None
+        if "WEBSITE_SOURCE" not in df_result.columns:
+            df_result["WEBSITE_SOURCE"] = None
+        if "CNAE_SOURCE" not in df_result.columns:
+            df_result["CNAE_SOURCE"] = None
+
+    # 2) Batch email validation
+    logger.info("Running batch email validation...")
+    email_rules = validation_rules.get("email", {})
+    df_result = validate_all_emails(df_result, email_rules)
+
+    # 3) Batch phone validation
+    logger.info("Running batch phone validation...")
+    phone_rules = validation_rules.get("phone", {})
+    df_result = validate_all_phones(df_result, phone_rules)
+
+    # 4) CIF revalidation
+    logger.info("Running CIF revalidation...")
+    cif_rules = validation_rules.get("cif", {})
+    df_result = revalidate_cifs(df_result, cif_rules)
+
+    # 5) Scoring
+    logger.info("Calculating data quality scores...")
+    scoring_rules = validation_rules.get("scoring", {})
+    scoring_engine = ScoringEngine(validation_rules={"scoring": scoring_rules})
+    df_result = scoring_engine.annotate_dataframe(df_result)
+
+    logger.info("Tier3, validation, and scoring complete")
+    return df_result

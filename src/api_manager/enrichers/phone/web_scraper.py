@@ -58,9 +58,11 @@ class WebScraperPhoneFinder:
     @with_retry((requests.RequestException,))
     def _fetch(self, url: str) -> str:
         normalized_url = _normalize_url(url)
+        # Ensure timeout is maximum 5 seconds
+        timeout = min(self.timeout, 5)
         resp = requests.get(
             normalized_url,
-            timeout=self.timeout,
+            timeout=timeout,
             headers={"User-Agent": "Tier1Enricher/1.0"},
         )
         resp.raise_for_status()
