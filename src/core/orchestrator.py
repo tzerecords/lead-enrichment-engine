@@ -575,7 +575,7 @@ def process_file(
 
         # Write output Excel
         logger.info(f"Writing output to: {output_path}")
-        write_excel(df_result, metadata, output_path, preserve_format=True)
+        write_excel(df_result, metadata, output_path, preserve_format=True, force_tier2=force_tier2)
 
         # Add errors sheet if there are any errors
         if errors_list:

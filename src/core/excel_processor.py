@@ -210,6 +210,7 @@ def write_excel(
     metadata: Dict[str, Any],
     output_path: Path,
     preserve_format: bool = True,
+    force_tier2: bool = False,
 ) -> None:
     """Write DataFrame to Excel with 3 sheets: BBDD ORIGINAL, HIGHLIGHT, DATOS_TÉCNICOS.
 
@@ -315,46 +316,56 @@ def write_excel(
     # ============================================
     # HOJA 2: "HIGHLIGHT" - Filtrada y ordenada
     # ============================================
-    # Filter: PRIORITY >= 3, DATA_QUALITY in ['High', 'Medium']
-    mask_highlight = pd.Series([True] * len(df_processed), index=df_processed.index)
-    
-    if 'PRIORITY' in df_processed.columns:
-        mask_highlight = mask_highlight & (df_processed['PRIORITY'] >= 3)
-    
-    if 'DATA_QUALITY' in df_processed.columns:
-        mask_highlight = mask_highlight & (df_processed['DATA_QUALITY'].isin(['High', 'Medium']))
+    # Filter logic:
+    # - If force_tier2: include ALL non-red rows (all processed rows)
+    # - Otherwise: PRIORITY >= 3 AND DATA_QUALITY in ['High', 'Medium']
+    if force_tier2:
+        # Include all processed rows when force_tier2 is enabled
+        mask_highlight = pd.Series([True] * len(df_processed), index=df_processed.index)
+        logger.info("HIGHLIGHT: Including all processed rows (force_tier2=True)")
+    else:
+        # Normal filtering: high priority and quality
+        mask_highlight = pd.Series([True] * len(df_processed), index=df_processed.index)
+        
+        if 'PRIORITY' in df_processed.columns:
+            mask_highlight = mask_highlight & (df_processed['PRIORITY'] >= 3)
+        
+        if 'DATA_QUALITY' in df_processed.columns:
+            mask_highlight = mask_highlight & (df_processed['DATA_QUALITY'].isin(['High', 'Medium']))
+        
+        logger.info(f"HIGHLIGHT: Filtered to {mask_highlight.sum()}/{len(mask_highlight)} rows (PRIORITY>=3, DATA_QUALITY High/Medium)")
     
     df_highlight = df_processed[mask_highlight].copy()
     
-    # Create L/G column if needed
-    if 'L/G' not in df_highlight.columns:
-        if 'L/V' in df_highlight.columns:
-            df_highlight['L/G'] = df_highlight['L/V']
-        elif 'LUZ' in df_highlight.columns and 'GAS' in df_highlight.columns:
-            df_highlight['L/G'] = df_highlight.apply(
-                lambda row: 'LUZ+GAS' if (pd.notna(row.get('LUZ')) and pd.notna(row.get('GAS'))) 
-                            else ('LUZ' if pd.notna(row.get('LUZ')) else ('GAS' if pd.notna(row.get('GAS')) else '')),
-                axis=1
-            )
-        else:
-            df_highlight['L/G'] = ''
+    # If HIGHLIGHT is empty and force_tier2, fallback to all processed rows
+    if len(df_highlight) == 0 and not force_tier2:
+        logger.warning("HIGHLIGHT is empty, falling back to all processed rows")
+        df_highlight = df_processed.copy()
     
-    # Truncate OBSERVACIONES to 100 chars
-    if 'OBSERVACIONES' in df_highlight.columns:
-        df_highlight['OBSERVACIONES'] = df_highlight['OBSERVACIONES'].apply(
-            lambda x: str(x)[:100] + '...' if pd.notna(x) and len(str(x)) > 100 else (str(x) if pd.notna(x) else '')
-        )
-    
-    # Select highlight columns
+    # Select highlight columns (new list with status columns)
     highlight_cols = [
-        'NOMBRE CLIENTE', 'CONSUMO', 'L/G', 'PRIORITY', 'DATA_QUALITY',
-        'TELEFONO 1', 'EMAIL_SPECIFIC', 'CONTACT_NAME', 'LINKEDIN_COMPANY',
-        'WEBSITE', 'CNAE', 'OBSERVACIONES'
+        'NOMBRE CLIENTE', 'CONSUMO', 'PRIORITY', 'DATA_QUALITY',
+        'EMAIL_SPECIFIC', 'CONTACT_NAME', 'WEBSITE', 'CNAE',
+        'ENRICHMENT_STATUS', 'ENRICHMENT_NOTES', 'OBSERVACIONES'
     ]
     
-    # Use available columns
+    # Use available columns (only include columns that exist)
     available_highlight_cols = [col for col in highlight_cols if col in df_highlight.columns]
+    
+    # Add any missing important columns if they exist
+    optional_cols = ['TELEFONO 1', 'PHONE', 'LINKEDIN_COMPANY']
+    for col in optional_cols:
+        if col in df_highlight.columns and col not in available_highlight_cols:
+            available_highlight_cols.append(col)
+    
     df_highlight = df_highlight[available_highlight_cols].copy()
+    
+    # Ensure NOT_FOUND/NO_EMAIL_FOUND values are preserved (don't modify them)
+    # OBSERVACIONES: Keep original format, only truncate if extremely long (>500 chars)
+    if 'OBSERVACIONES' in df_highlight.columns:
+        df_highlight['OBSERVACIONES'] = df_highlight['OBSERVACIONES'].apply(
+            lambda x: str(x)[:500] + '...' if pd.notna(x) and len(str(x)) > 500 else (str(x) if pd.notna(x) else '')
+        )
     
     # Sort: PRIORITY DESC, DATA_QUALITY DESC, CONSUMO DESC
     sort_cols = []
