@@ -197,14 +197,33 @@ def run_tier2_enrichment(
     """
     df_result = df.copy()
 
+    # Initialize mask as boolean Series indexed by df_result.index
+    mask_tier2 = pd.Series(False, index=df_result.index)
+    
     # Filter to priority >= 2 only (or all non-red if force_tier2)
     if force_tier2:
         # Process all non-red rows
-        mask_tier2 = ~df_result.get("_IS_RED_ROW", False)
+        if "_IS_RED_ROW" in df_result.columns:
+            mask_tier2 = (df_result["_IS_RED_ROW"] == False)
+        else:
+            # If _IS_RED_ROW doesn't exist, process all rows
+            mask_tier2 = pd.Series(True, index=df_result.index)
         logger.info("Force Tier2 enabled: processing ALL non-red rows")
     else:
-        mask_tier2 = df_result.get("PRIORITY", 0) >= 2
-    df_tier2 = df_result[mask_tier2].copy()
+        # Normal mode: priority >= 2 and not red
+        priority_mask = (df_result.get("PRIORITY", pd.Series(0, index=df_result.index)).fillna(0) >= 2)
+        red_mask = (df_result.get("_IS_RED_ROW", pd.Series(False, index=df_result.index)) == False)
+        mask_tier2 = priority_mask & red_mask
+    
+    # Validate mask before using
+    assert isinstance(mask_tier2, pd.Series), f"mask_tier2 must be Series, got {type(mask_tier2)}"
+    assert mask_tier2.dtype == bool, f"mask_tier2 must be bool dtype, got {mask_tier2.dtype}"
+    assert len(mask_tier2) == len(df_result), f"mask_tier2 length {len(mask_tier2)} != df_result length {len(df_result)}"
+    
+    logger.info(f"Tier2 mask true count: {mask_tier2.sum()} / {len(mask_tier2)} (force={force_tier2})")
+    
+    # Use .loc for boolean indexing
+    df_tier2 = df_result.loc[mask_tier2].copy()
 
     if len(df_tier2) == 0:
         logger.info("No leads with priority>=2, skipping Tier2 enrichment")
