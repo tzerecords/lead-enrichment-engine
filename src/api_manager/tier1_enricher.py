@@ -64,10 +64,26 @@ class Tier1Enricher:
         Returns enriched dict with columns from tier1_config.yaml.
         """
 
-        cif = str(lead.get("CIF", "")).strip()
-        company_name = str(lead.get("NOMBRE_EMPRESA", "")).strip()
-        city = str(lead.get("CIUDAD", "")).strip() or None
-        website = str(lead.get("WEBSITE", "")).strip() or None
+        # Try multiple column name variations
+        cif = (
+            str(lead.get("CIF", "") or "").strip() or 
+            str(lead.get("CIF/NIF", "") or "").strip() or
+            str(lead.get("CIF_NIF", "") or "").strip() or
+            ""
+        )
+        company_name = (
+            str(lead.get("NOMBRE_EMPRESA", "") or "").strip() or
+            str(lead.get("NOMBRE CLIENTE", "") or "").strip() or
+            str(lead.get("NOMBRE_CLIENTE", "") or "").strip() or
+            str(lead.get("RAZON_SOCIAL", "") or "").strip() or
+            ""
+        )
+        city = (
+            str(lead.get("CIUDAD", "") or "").strip() or
+            str(lead.get("POBLACIÓN CLIENTE", "") or "").strip() or
+            None
+        )
+        website = str(lead.get("WEBSITE", "") or "").strip() or None
 
         errors: List[str] = []
 

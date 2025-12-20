@@ -6,7 +6,7 @@ from typing import Tuple, Dict, Any, List
 from copy import copy
 import pandas as pd
 from openpyxl import load_workbook
-from openpyxl.styles import PatternFill
+from openpyxl.styles import PatternFill, Font
 from openpyxl.utils import get_column_letter
 import re
 
@@ -184,76 +184,226 @@ def read_excel(filepath: Path) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     return df, metadata
 
 
+def _auto_adjust_column_widths(ws) -> None:
+    """Auto-adjust column widths for a worksheet.
+    
+    Args:
+        ws: openpyxl worksheet object.
+    """
+    for column in ws.columns:
+        max_length = 0
+        column_letter = get_column_letter(column[0].column)
+        for cell in column:
+            try:
+                if cell.value:
+                    cell_len = len(str(cell.value))
+                    if cell_len > max_length:
+                        max_length = cell_len
+            except:
+                pass
+        adjusted_width = min(max_length + 2, 50)
+        ws.column_dimensions[column_letter].width = adjusted_width
+
+
 def write_excel(
     df: pd.DataFrame,
     metadata: Dict[str, Any],
     output_path: Path,
     preserve_format: bool = True,
 ) -> None:
-    """Write DataFrame to Excel preserving original format.
+    """Write DataFrame to Excel with 3 sheets: BBDD ORIGINAL, HIGHLIGHT, DATOS_TÉCNICOS.
 
     Args:
         df: DataFrame to write.
         metadata: Metadata from read_excel (includes original filepath).
         output_path: Path for output Excel file.
-        preserve_format: Whether to preserve original formatting.
+        preserve_format: Whether to preserve original formatting (only for HOJA 1).
     """
-    logger.info(f"Writing Excel file: {output_path}")
+    logger.info(f"Writing Excel file with 3 sheets: {output_path}")
 
     # Ensure output directory exists
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Debug logging: verify metadata structure (workbook_context equivalent)
-    logger.info(f"DEBUG write_excel: metadata type: {type(metadata)}")
-    logger.info(f"DEBUG write_excel: metadata value: {metadata}")
-    logger.info(f"DEBUG write_excel: metadata is None? {metadata is None}")
-    if metadata is not None:
-        logger.info(f"DEBUG write_excel: metadata keys: {metadata.keys() if isinstance(metadata, dict) else 'NOT A DICT'}")
+    # Get red row indices from metadata
+    red_df_indices = metadata.get("red_df_indices", [])
     
-    # Additional debug logging
-    logger.debug(f"Metadata keys: {list(metadata.keys()) if metadata else 'None'}")
-    logger.debug(f"Metadata type: {type(metadata)}")
-    if metadata:
-        logger.debug(f"Metadata has 'filepath': {'filepath' in metadata}")
-        if "filepath" in metadata:
-            logger.debug(f"Original filepath: {metadata['filepath']}")
-            logger.debug(f"Original filepath exists: {Path(metadata['filepath']).exists() if metadata['filepath'] else 'N/A'}")
+    # Prepare data: remove red rows for HOJA 1 and HOJA 2, keep all for HOJA 3
+    if "_IS_RED_ROW" in df.columns:
+        df_processed = df[df["_IS_RED_ROW"] == False].copy()
+        df_processed = df_processed.drop(columns=["_IS_RED_ROW"])
+        # Keep all rows (including red) for HOJA 3
+        df_all = df.drop(columns=["_IS_RED_ROW"]).copy()
+    else:
+        df_processed = df.copy()
+        df_all = df.copy()
+    
+    # ============================================
+    # Calculate COLOR column based on processing status
+    # ============================================
+    def calculate_color_status(row_idx: int, row: pd.Series) -> str:
+        """Calculate COLOR status for a row.
+        
+        Args:
+            row_idx: DataFrame index (0-based).
+            row: Series representing the row.
+            
+        Returns:
+            Color status string.
+        """
+        # Check if row was originally red (ignored)
+        if row_idx in red_df_indices:
+            return "ROJO (IGNORADA)"
+        
+        # Get priority
+        priority = row.get("PRIORITY")
+        if pd.isna(priority) or priority is None:
+            priority = 0
+        else:
+            priority = float(priority)
+        
+        # If priority < 2, it's TIER1 only
+        if priority < 2:
+            return "MORADO (TIER1)"
+        
+        # Priority >= 2: check if enriched with new data
+        has_website = pd.notna(row.get("WEBSITE")) and str(row.get("WEBSITE", "")).strip() not in ["", "NOT_FOUND", "NO_WEBSITE_FOUND"]
+        has_email = pd.notna(row.get("EMAIL_SPECIFIC")) and str(row.get("EMAIL_SPECIFIC", "")).strip() not in ["", "NO_EMAIL_FOUND", "NOT_FOUND"]
+        has_contact = pd.notna(row.get("CONTACT_NAME")) and str(row.get("CONTACT_NAME", "")).strip() not in ["", "NOT_FOUND", "NO_CONTACT_FOUND"]
+        
+        if has_website or has_email or has_contact:
+            return "VERDE (ENRIQUECIDA)"
+        else:
+            return "AMARILLO (SIN DATOS NUEVOS)"
+    
+    # Calculate COLOR for all rows in df_all (includes red rows)
+    df_all["COLOR"] = df_all.apply(
+        lambda row: calculate_color_status(row.name, row),
+        axis=1
+    )
+    
+    # Also add to df_processed for HOJA 1
+    df_processed["COLOR"] = df_processed.apply(
+        lambda row: calculate_color_status(row.name, row),
+        axis=1
+    )
 
+    # ============================================
+    # HOJA 1: "BBDD ORIGINAL" - Columnas originales + 6 nuevas
+    # ============================================
+    original_columns = metadata.get("original_columns", [])
+    # Remove _IS_RED_ROW from original columns if present
+    original_columns = [col for col in original_columns if col != "_IS_RED_ROW"]
+    
+    # Add 7 new columns (including COLOR)
+    new_columns = ['PRIORITY', 'WEBSITE', 'CNAE', 'EMAIL_SPECIFIC', 'CONTACT_NAME', 'DATA_QUALITY', 'COLOR']
+    
+    # Build list of columns for HOJA 1
+    hoja1_columns = []
+    for col in original_columns:
+        if col in df_processed.columns:
+            hoja1_columns.append(col)
+    for col in new_columns:
+        if col in df_processed.columns:
+            hoja1_columns.append(col)
+    
+    # Ensure COLOR is included if it exists
+    if "COLOR" in df_processed.columns and "COLOR" not in hoja1_columns:
+        hoja1_columns.append("COLOR")
+    
+    df_original = df_processed[[col for col in hoja1_columns if col in df_processed.columns]].copy()
+    
+    # ============================================
+    # HOJA 2: "HIGHLIGHT" - Filtrada y ordenada
+    # ============================================
+    # Filter: PRIORITY >= 3, DATA_QUALITY in ['High', 'Medium']
+    mask_highlight = pd.Series([True] * len(df_processed), index=df_processed.index)
+    
+    if 'PRIORITY' in df_processed.columns:
+        mask_highlight = mask_highlight & (df_processed['PRIORITY'] >= 3)
+    
+    if 'DATA_QUALITY' in df_processed.columns:
+        mask_highlight = mask_highlight & (df_processed['DATA_QUALITY'].isin(['High', 'Medium']))
+    
+    df_highlight = df_processed[mask_highlight].copy()
+    
+    # Create L/G column if needed
+    if 'L/G' not in df_highlight.columns:
+        if 'L/V' in df_highlight.columns:
+            df_highlight['L/G'] = df_highlight['L/V']
+        elif 'LUZ' in df_highlight.columns and 'GAS' in df_highlight.columns:
+            df_highlight['L/G'] = df_highlight.apply(
+                lambda row: 'LUZ+GAS' if (pd.notna(row.get('LUZ')) and pd.notna(row.get('GAS'))) 
+                            else ('LUZ' if pd.notna(row.get('LUZ')) else ('GAS' if pd.notna(row.get('GAS')) else '')),
+                axis=1
+            )
+        else:
+            df_highlight['L/G'] = ''
+    
+    # Truncate OBSERVACIONES to 100 chars
+    if 'OBSERVACIONES' in df_highlight.columns:
+        df_highlight['OBSERVACIONES'] = df_highlight['OBSERVACIONES'].apply(
+            lambda x: str(x)[:100] + '...' if pd.notna(x) and len(str(x)) > 100 else (str(x) if pd.notna(x) else '')
+        )
+    
+    # Select highlight columns
+    highlight_cols = [
+        'NOMBRE CLIENTE', 'CONSUMO', 'L/G', 'PRIORITY', 'DATA_QUALITY',
+        'TELEFONO 1', 'EMAIL_SPECIFIC', 'CONTACT_NAME', 'LINKEDIN_COMPANY',
+        'WEBSITE', 'CNAE', 'OBSERVACIONES'
+    ]
+    
+    # Use available columns
+    available_highlight_cols = [col for col in highlight_cols if col in df_highlight.columns]
+    df_highlight = df_highlight[available_highlight_cols].copy()
+    
+    # Sort: PRIORITY DESC, DATA_QUALITY DESC, CONSUMO DESC
+    sort_cols = []
+    if 'PRIORITY' in df_highlight.columns:
+        sort_cols.append('PRIORITY')
+    if 'DATA_QUALITY' in df_highlight.columns:
+        sort_cols.append('DATA_QUALITY')
+    if 'CONSUMO' in df_highlight.columns:
+        sort_cols.append('CONSUMO')
+    
+    if sort_cols:
+        df_highlight = df_highlight.sort_values(by=sort_cols, ascending=[False] * len(sort_cols))
+    
+    # ============================================
+    # HOJA 3: "DATOS_TÉCNICOS" - Todas las columnas (incluye filas rojas)
+    # ============================================
+    df_technical = df_all.copy()
+    
+    # ============================================
+    # Write Excel with 3 sheets
+    # ============================================
+    # First, write all sheets using pandas
+    with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+        df_original.to_excel(writer, sheet_name='BBDD ORIGINAL', index=False)
+        df_highlight.to_excel(writer, sheet_name='HIGHLIGHT', index=False)
+        df_technical.to_excel(writer, sheet_name='DATOS_TÉCNICOS', index=False)
+    
+    # Now apply formatting
+    wb = load_workbook(output_path)
+    
+    # ============================================
+    # Format HOJA 1: Preserve original format (then apply COLOR fills)
+    # ============================================
+    ws_original = wb['BBDD ORIGINAL']
+    
     if preserve_format and "filepath" in metadata:
-        # Load original workbook to copy formatting
         original_path = metadata["filepath"]
-        # Convert to Path if it's a string
         original_path_obj = Path(original_path) if isinstance(original_path, str) else original_path
         
-        logger.debug(f"Attempting to load original workbook from: {original_path}")
-        logger.debug(f"Original path type: {type(original_path)}")
-        logger.debug(f"Original path exists: {original_path_obj.exists() if original_path_obj else 'N/A'}")
-        
         try:
-            if not original_path or not original_path_obj.exists():
-                raise FileNotFoundError(f"Original filepath in metadata is invalid or doesn't exist: {original_path}")
-            
-            # Use Path object for load_workbook
-            original_path = original_path_obj
-            
-            wb_original = load_workbook(original_path)
-            ws_original = wb_original.active
-            logger.debug(f"Loaded original workbook: max_row={ws_original.max_row}, max_column={ws_original.max_column}")
-
-            # Create new workbook
-            wb_new = load_workbook(original_path)
-            ws_new = wb_new.active
-
-            # Clear data but keep formatting structure
-            # We'll write new data while preserving colors
-
-            # Write header row
-            for col_idx, col_name in enumerate(df.columns, start=1):
-                cell = ws_new.cell(row=1, column=col_idx)
-                cell.value = col_name
-                # Copy header formatting from original if exists
-                if col_idx <= ws_original.max_column:
-                        orig_cell = ws_original.cell(row=1, column=col_idx)
+            if original_path_obj.exists():
+                wb_source = load_workbook(original_path_obj)
+                ws_source = wb_source.active
+                
+                # Copy header formatting
+                for col_idx in range(1, min(len(hoja1_columns) + 1, ws_source.max_column + 1)):
+                    cell = ws_original.cell(row=1, column=col_idx)
+                    if col_idx <= ws_source.max_column:
+                        orig_cell = ws_source.cell(row=1, column=col_idx)
                         try:
                             if orig_cell.fill and orig_cell.fill.patternType:
                                 cell.fill = PatternFill(
@@ -262,81 +412,88 @@ def write_excel(
                                     fill_type=orig_cell.fill.fill_type
                                 )
                         except Exception:
-                            pass  # Skip if fill copy fails
+                            pass
                         try:
                             if orig_cell.font:
                                 cell.font = orig_cell.font.copy()
                         except Exception:
-                            pass  # Skip if font copy fails
-
-            # Write data rows (skip red rows)
-            # Filter out red rows if the column exists
-            if "_IS_RED_ROW" in df.columns:
-                df_filtered = df[df["_IS_RED_ROW"] == False].copy()
-                df_filtered = df_filtered.drop(columns=["_IS_RED_ROW"])
-            else:
-                df_filtered = df.copy()
-            
-            # Reset index para iterar secuencialmente
-            df_filtered = df_filtered.reset_index(drop=True)
-
-            excel_row = 2  # Start at row 2 (after header)
-            original_columns_count = len(metadata.get("original_columns", []))
-            
-            for row_idx in range(len(df_filtered)):
-                row_data = df_filtered.iloc[row_idx]
+                            pass
                 
-                for col_idx, value in enumerate(row_data, start=1):
-                    cell = ws_new.cell(row=excel_row, column=col_idx)
-                    cell.value = value
-                    
-                    # Copy format from FIRST data row (row 2) of original as template
-                    # Solo para columnas originales (no las nuevas que agregamos)
-                    if col_idx <= original_columns_count:
-                        try:
-                            orig_cell = ws_original.cell(row=2, column=col_idx)  # Siempre usar row 2 como template
-                            
-                            # Copy formatting
-                            if orig_cell.has_style:
-                                cell.font = copy(orig_cell.font)
-                                cell.fill = copy(orig_cell.fill)
-                                cell.border = copy(orig_cell.border)
-                                cell.alignment = copy(orig_cell.alignment)
-                                cell.number_format = orig_cell.number_format
-                        except Exception as e:
-                            logger.debug(f"Could not copy format for col {col_idx}: {e}")
+                # Copy data row formatting (use row 2 as template) - BUT skip fill (we'll apply COLOR-based fills)
+                original_columns_count = len(original_columns)
+                for row_idx in range(2, ws_original.max_row + 1):
+                    for col_idx in range(1, len(hoja1_columns) + 1):
+                        cell = ws_original.cell(row=row_idx, column=col_idx)
+                        if col_idx <= original_columns_count and ws_source.max_row >= 2:
+                            try:
+                                orig_cell = ws_source.cell(row=2, column=col_idx)
+                                if orig_cell.has_style:
+                                    cell.font = copy(orig_cell.font)
+                                    # Skip fill - we'll apply COLOR-based fills below
+                                    cell.border = copy(orig_cell.border)
+                                    cell.alignment = copy(orig_cell.alignment)
+                                    cell.number_format = orig_cell.number_format
+                            except Exception:
+                                pass
                 
-                excel_row += 1
-
-            wb_original.close()
-            wb_new.save(output_path)
-            wb_new.close()
-            logger.info(f"Excel file written with format preservation: {output_path}")
-
+                wb_source.close()
         except Exception as e:
-            import traceback
-            logger.error(f"DEBUG write_excel: Exception type: {type(e)}")
-            logger.error(f"DEBUG write_excel: Exception message: {e}")
-            logger.error(f"DEBUG write_excel: Exception args: {e.args}")
-            logger.error(f"DEBUG write_excel: Full traceback:\n{traceback.format_exc()}")
-            logger.error(f"DEBUG write_excel: Exception repr: {repr(e)}")
-            logger.warning(
-                f"Error preserving format, falling back to simple write: {e}"
-            )
-            # Fallback to simple pandas write
-            if "_IS_RED_ROW" in df.columns:
-                df_filtered = df[df["_IS_RED_ROW"] == False].copy()
-                df_filtered = df_filtered.drop(columns=["_IS_RED_ROW"])
-            else:
-                df_filtered = df.copy()
-            df_filtered.to_excel(output_path, index=False, engine="openpyxl")
-    else:
-        # Simple write without format preservation
-        if "_IS_RED_ROW" in df.columns:
-            df_filtered = df[df["_IS_RED_ROW"] == False].copy()
-            df_filtered = df_filtered.drop(columns=["_IS_RED_ROW"])
-        else:
-            df_filtered = df.copy()
-        df_filtered.to_excel(output_path, index=False, engine="openpyxl")
-        logger.info(f"Excel file written (simple mode): {output_path}")
+            logger.warning(f"Could not preserve format for HOJA 1: {e}")
+    
+    # Apply COLOR-based background colors AFTER preserving other formatting
+    # Find COLOR column index
+    color_col_idx = None
+    for idx, col_name in enumerate(hoja1_columns, start=1):
+        if col_name == "COLOR":
+            color_col_idx = idx
+            break
+    
+    # Define color mappings (ARGB format for openpyxl)
+    color_fills = {
+        "ROJO (IGNORADA)": PatternFill(start_color="FFFF0000", end_color="FFFF0000", fill_type="solid"),  # Red
+        "MORADO (TIER1)": PatternFill(start_color="FF800080", end_color="FF800080", fill_type="solid"),  # Purple
+        "VERDE (ENRIQUECIDA)": PatternFill(start_color="FF00FF00", end_color="FF00FF00", fill_type="solid"),  # Green
+        "AMARILLO (SIN DATOS NUEVOS)": PatternFill(start_color="FFFFFF00", end_color="FFFFFF00", fill_type="solid"),  # Yellow
+    }
+    
+    # Apply background colors to entire rows based on COLOR column
+    if color_col_idx:
+        logger.info(f"Applying COLOR-based background fills to HOJA 1 (COLOR column at index {color_col_idx})")
+        for row_idx in range(2, ws_original.max_row + 1):  # Start from row 2 (skip header)
+            color_cell = ws_original.cell(row=row_idx, column=color_col_idx)
+            color_value = str(color_cell.value or "").strip()
+            
+            if color_value in color_fills:
+                fill = color_fills[color_value]
+                # Apply fill to entire row
+                for col_idx in range(1, ws_original.max_column + 1):
+                    cell = ws_original.cell(row=row_idx, column=col_idx)
+                    cell.fill = fill
+    
+    # Auto-adjust widths for HOJA 1
+    _auto_adjust_column_widths(ws_original)
+    
+    # ============================================
+    # Format HOJA 2: Headers bold, clean white background
+    # ============================================
+    ws_highlight = wb['HIGHLIGHT']
+    
+    # Make headers bold
+    for cell in ws_highlight[1]:
+        cell.font = Font(bold=True)
+    
+    # Auto-adjust widths
+    _auto_adjust_column_widths(ws_highlight)
+    
+    # ============================================
+    # Format HOJA 3: Auto-adjust widths only
+    # ============================================
+    ws_technical = wb['DATOS_TÉCNICOS']
+    _auto_adjust_column_widths(ws_technical)
+    
+    # Save workbook
+    wb.save(output_path)
+    wb.close()
+    
+    logger.info(f"Excel file written with 3 sheets: {output_path}")
 

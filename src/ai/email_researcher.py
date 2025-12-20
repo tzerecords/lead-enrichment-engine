@@ -431,7 +431,10 @@ Return valid JSON only:"""
         Returns:
             EmailResearchResult with Phase 1 and Phase 2 data.
         """
+        self.logger.info(f"_research_email_with_ai LLAMADA para: {company} (city={city}, website={website})")
+        
         if not company or not company.strip():
+            self.logger.warning(f"Empty company name provided to research_email")
             return EmailResearchResult(
                 company_enrichment=CompanyEnrichment(
                     razon_social_oficial=None,
@@ -453,10 +456,16 @@ Return valid JSON only:"""
             )
 
         # Phase 1: Company enrichment
+        self.logger.info(f"Iniciando Phase 1 (company enrichment) para: {company}")
         company_enrichment = self._phase1_company_enrichment(company, city, website)
+        self.logger.info(
+            f"Phase 1 completado - company_exists={company_enrichment.company_exists}, "
+            f"confidence={company_enrichment.confidence_score:.2f}"
+        )
 
         # Check if we should skip Phase 2
         if self.skip_phase2_if_not_found and not company_enrichment.company_exists:
+            self.logger.info(f"Saltando Phase 2 - company not found (skip_phase2_if_not_found=True)")
             return EmailResearchResult(
                 company_enrichment=company_enrichment,
                 email=None,
@@ -477,8 +486,13 @@ Return valid JSON only:"""
             notes = ""
 
         # Phase 2: Contact hunting
+        self.logger.info(f"Iniciando Phase 2 (contact hunting) para: {company}")
         email, contact_name, contact_position, linkedin_url, source_url = self._phase2_contact_hunting(
             company_enrichment, city
+        )
+        self.logger.info(
+            f"Phase 2 completado - email={'ENCONTRADO' if email else 'NO ENCONTRADO'}, "
+            f"contact_name={contact_name}, source_url={source_url}"
         )
 
         # Calculate overall confidence

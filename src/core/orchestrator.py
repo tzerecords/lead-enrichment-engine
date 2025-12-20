@@ -124,16 +124,49 @@ def run_pipeline(
     enricher = Tier1Enricher(config_path=config_path)
 
     records = df_process.to_dict(orient="records")
+    
+    # Debug: Log BEFORE enrichment
+    logger.info(f"BEFORE Tier1: Sample record keys: {list(records[0].keys()) if records else 'NO RECORDS'}")
+    if records:
+        sample = records[0]
+        logger.info(f"BEFORE Tier1: CIF/NIF={sample.get('CIF/NIF')}, CIF={sample.get('CIF')}, "
+                   f"TELEFONO 1={sample.get('TELEFONO 1')}, NOMBRE CLIENTE={sample.get('NOMBRE CLIENTE')}")
+    
     batch_report = enricher.enrich_batch(records)
+
+    # Debug: Log AFTER enrichment
+    logger.info(f"AFTER Tier1: Sample record keys: {list(records[0].keys()) if records else 'NO RECORDS'}")
+    if records:
+        sample = records[0]
+        logger.info(f"AFTER Tier1: CIF={sample.get('CIF')}, PHONE={sample.get('PHONE')}, "
+                   f"RAZON_SOCIAL={sample.get('RAZON_SOCIAL')}, CIF_VALID={sample.get('CIF_VALID')}")
 
     # Bring enriched columns back into the main DataFrame
     df_enriched = pd.DataFrame(records)
     indices = df_process.index.to_list()
+    
+    logger.info(f"Tier1 enriched DataFrame columns: {list(df_enriched.columns)}")
+    logger.info(f"Tier1 enriched DataFrame shape: {df_enriched.shape}")
 
     # Update enriched columns, but preserve OBSERVACIONES (already updated by validators)
     for col in df_enriched.columns:
         if col != "OBSERVACIONES":  # Don't overwrite OBSERVACIONES - it was already updated by validators
-            df_result.loc[indices, col] = df_enriched[col].values
+            if col not in df_result.columns:
+                df_result[col] = None  # Initialize column if it doesn't exist
+                logger.info(f"Initialized new column: {col}")
+            try:
+                df_result.loc[indices, col] = df_enriched[col].values
+                non_null_count = df_enriched[col].notna().sum()
+                if non_null_count > 0:
+                    logger.info(f"Updated column {col}: {non_null_count}/{len(indices)} non-null values")
+                    # Log sample values
+                    sample_values = df_enriched[col].dropna().head(2).tolist()
+                    logger.info(f"  Sample values in {col}: {sample_values}")
+            except Exception as e:
+                logger.error(f"Error updating column {col}: {e}", exc_info=True)
+    
+    logger.info(f"df_result columns after Tier1: {list(df_result.columns)}")
+    logger.info(f"df_result shape after Tier1: {df_result.shape}")
 
     # Clean temporary column before returning
     if "_IS_RED_ROW" in df_result.columns:
@@ -146,23 +179,31 @@ def run_tier2_enrichment(
     df: pd.DataFrame,
     tier2_config_path: str = "config/tier2_config.yaml",
     enable_email_research: bool = False,
+    force_tier2: bool = False,
 ) -> Tuple[pd.DataFrame, Tier2BatchReport]:
-    """Run Tier2 enrichment for priority>=2 leads only.
+    """Run Tier2 enrichment for priority>=2 leads only (or all non-red if force_tier2=True).
 
     This function expects a DataFrame with PRIORITY column already calculated.
-    Only processes leads with priority >= 2.
+    Only processes leads with priority >= 2, unless force_tier2=True.
 
     Args:
         df: DataFrame with PRIORITY column.
         tier2_config_path: Path to Tier2 config YAML.
+        enable_email_research: Whether to enable email research.
+        force_tier2: If True, process ALL non-red rows regardless of priority (for testing).
 
     Returns:
         Tuple of (enriched DataFrame, Tier2BatchReport).
     """
     df_result = df.copy()
 
-    # Filter to priority >= 2 only
-    mask_tier2 = df_result.get("PRIORITY", 0) >= 2
+    # Filter to priority >= 2 only (or all non-red if force_tier2)
+    if force_tier2:
+        # Process all non-red rows
+        mask_tier2 = ~df_result.get("_IS_RED_ROW", False)
+        logger.info("Force Tier2 enabled: processing ALL non-red rows")
+    else:
+        mask_tier2 = df_result.get("PRIORITY", 0) >= 2
     df_tier2 = df_result[mask_tier2].copy()
 
     if len(df_tier2) == 0:
@@ -332,3 +373,227 @@ def run_tier3_and_validation(
 
     logger.info("Tier3, validation, and scoring complete")
     return df_result
+
+
+def process_file(
+    input_path: Path,
+    output_path: Path,
+    tiers: list[int] = [1, 3],
+    enable_email_research: bool = False,
+    force_tier2: bool = False,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Process Excel file through the full pipeline.
+
+    Args:
+        input_path: Path to input Excel file.
+        output_path: Path for output Excel file.
+        tiers: List of tiers to run (1, 2, 3). Default: [1, 3].
+        enable_email_research: Whether to enable email research in Tier2.
+
+    Returns:
+        Tuple of (processed DataFrame, metrics dict).
+    """
+    from src.core.excel_processor import read_excel, write_excel
+
+    errors_list = []  # List to collect errors: {row: int, field: str, error: str}
+
+    try:
+        # Read Excel file
+        logger.info(f"Reading Excel file: {input_path}")
+        df, metadata = read_excel(input_path)
+
+        # Run Tier1 (always runs if tier 1 is in tiers)
+        if 1 in tiers:
+            logger.info("Running Tier1 pipeline...")
+            df_result, batch_report = run_pipeline(
+                df=df,
+                tier1_only=False,
+                config_path="config/tier1_config.yaml",
+            )
+        else:
+            # Just calculate priorities if Tier1 is skipped
+            from src.core.priority_engine import PriorityEngine
+            priority_engine = PriorityEngine()
+            mask_process = ~df.get("_IS_RED_ROW", False)
+            df_process = df[mask_process].copy()
+            priorities = priority_engine.calculate_priorities(df_process)
+            df_result = df.copy()
+            df_result["PRIORITY"] = None
+            df_result.loc[mask_process, "PRIORITY"] = priorities.values
+            batch_report = None
+
+        # Run Tier2 if requested
+        tier2_report = None
+        if 2 in tiers:
+            logger.info("Running Tier2 enrichment...")
+            df_result, tier2_report = run_tier2_enrichment(
+                df=df_result,
+                tier2_config_path="config/tier2_config.yaml",
+                enable_email_research=enable_email_research,
+                force_tier2=force_tier2,
+            )
+
+        # Run Tier3 if requested
+        if 3 in tiers:
+            logger.info("Running Tier3 enrichment + validation + scoring...")
+            df_result = run_tier3_and_validation(df_result, enable_tier3=True)
+
+        # ============================================
+        # Add status columns for DATOS_TÉCNICOS
+        # ============================================
+        red_df_indices = metadata.get("red_df_indices", [])
+        
+        # Initialize status columns
+        df_result["ENRICHMENT_STATUS"] = None
+        df_result["ENRICHMENT_NOTES"] = None
+        df_result["TIER1_STATUS"] = None
+        df_result["TIER2_STATUS"] = None
+        df_result["TIER3_STATUS"] = None
+        
+        # Set status for red rows (skipped)
+        for idx in red_df_indices:
+            if idx < len(df_result):
+                row_idx = df_result.index[idx]
+                df_result.loc[row_idx, "ENRICHMENT_STATUS"] = "SKIPPED_RED"
+                df_result.loc[row_idx, "ENRICHMENT_NOTES"] = "original red row"
+                df_result.loc[row_idx, "TIER1_STATUS"] = "SKIPPED"
+                df_result.loc[row_idx, "TIER2_STATUS"] = "SKIPPED"
+                df_result.loc[row_idx, "TIER3_STATUS"] = "SKIPPED"
+        
+        # Set status for processed rows
+        mask_processed = ~df_result.index.isin([df_result.index[i] for i in red_df_indices if i < len(df_result)])
+        df_processed = df_result[mask_processed].copy()
+        
+        # Tier1 status
+        if 1 in tiers:
+            for idx in df_processed.index:
+                errors = str(df_result.loc[idx, "ERRORS"] or "").strip()
+                if "GOOGLE_PLACES" in errors and "rate limit" in errors.lower():
+                    df_result.loc[idx, "TIER1_STATUS"] = "RATE_LIMITED"
+                    df_result.loc[idx, "ENRICHMENT_STATUS"] = "RATE_LIMITED"
+                    df_result.loc[idx, "ENRICHMENT_NOTES"] = "google_places rate limit"
+                elif "GOOGLE_PLACES" in errors:
+                    df_result.loc[idx, "TIER1_STATUS"] = "NOT_FOUND"
+                    if df_result.loc[idx, "ENRICHMENT_STATUS"] is None:
+                        df_result.loc[idx, "ENRICHMENT_STATUS"] = "NOT_FOUND"
+                    if df_result.loc[idx, "ENRICHMENT_NOTES"] is None:
+                        df_result.loc[idx, "ENRICHMENT_NOTES"] = "google_places no match"
+                elif errors:
+                    df_result.loc[idx, "TIER1_STATUS"] = "ERROR"
+                    if df_result.loc[idx, "ENRICHMENT_STATUS"] is None:
+                        df_result.loc[idx, "ENRICHMENT_STATUS"] = "ERROR"
+                    if df_result.loc[idx, "ENRICHMENT_NOTES"] is None:
+                        df_result.loc[idx, "ENRICHMENT_NOTES"] = f"tier1 error: {errors[:50]}"
+                else:
+                    df_result.loc[idx, "TIER1_STATUS"] = "OK"
+                    if df_result.loc[idx, "ENRICHMENT_STATUS"] is None:
+                        df_result.loc[idx, "ENRICHMENT_STATUS"] = "OK"
+        else:
+            for idx in df_processed.index:
+                df_result.loc[idx, "TIER1_STATUS"] = "SKIPPED"
+        
+        # Tier2 status
+        if 2 in tiers:
+            for idx in df_processed.index:
+                tier2_errors = str(df_result.loc[idx, "TIER2_ERRORS"] or "").strip()
+                if tier2_errors:
+                    if "tavily" in tier2_errors.lower() or "openai" in tier2_errors.lower():
+                        df_result.loc[idx, "TIER2_STATUS"] = "ERROR"
+                        if df_result.loc[idx, "ENRICHMENT_STATUS"] not in ["RATE_LIMITED", "ERROR"]:
+                            df_result.loc[idx, "ENRICHMENT_STATUS"] = "ERROR"
+                        notes = f"tavily error: {tier2_errors[:50]}"
+                        if df_result.loc[idx, "ENRICHMENT_NOTES"]:
+                            df_result.loc[idx, "ENRICHMENT_NOTES"] += f" | {notes}"
+                        else:
+                            df_result.loc[idx, "ENRICHMENT_NOTES"] = notes
+                    else:
+                        df_result.loc[idx, "TIER2_STATUS"] = "ERROR"
+                else:
+                    email = str(df_result.loc[idx, "EMAIL_SPECIFIC"] or "").strip()
+                    if email and email not in ["", "NO_EMAIL_FOUND", "NOT_FOUND"]:
+                        df_result.loc[idx, "TIER2_STATUS"] = "OK"
+                    else:
+                        df_result.loc[idx, "TIER2_STATUS"] = "NOT_FOUND"
+                
+                # Ensure EMAIL_SPECIFIC is not blank if Tier2 ran
+                if pd.isna(df_result.loc[idx, "EMAIL_SPECIFIC"]) or str(df_result.loc[idx, "EMAIL_SPECIFIC"]).strip() == "":
+                    df_result.loc[idx, "EMAIL_SPECIFIC"] = "NO_EMAIL_FOUND"
+                
+                # Check for contact without email
+                contact_name = str(df_result.loc[idx, "CONTACT_NAME"] or "").strip()
+                if contact_name and contact_name not in ["", "NOT_FOUND", "NO_CONTACT_FOUND"]:
+                    email_val = str(df_result.loc[idx, "EMAIL_SPECIFIC"] or "").strip()
+                    if email_val in ["", "NO_EMAIL_FOUND", "NOT_FOUND"]:
+                        if df_result.loc[idx, "ENRICHMENT_NOTES"]:
+                            df_result.loc[idx, "ENRICHMENT_NOTES"] += " | contact found, no email"
+                        else:
+                            df_result.loc[idx, "ENRICHMENT_NOTES"] = "contact found, no email"
+        else:
+            for idx in df_processed.index:
+                df_result.loc[idx, "TIER2_STATUS"] = "SKIPPED"
+        
+        # Tier3 status
+        if 3 in tiers:
+            for idx in df_processed.index:
+                # Ensure WEBSITE and CNAE are not blank if Tier3 ran
+                if pd.isna(df_result.loc[idx, "WEBSITE"]) or str(df_result.loc[idx, "WEBSITE"]).strip() == "":
+                    df_result.loc[idx, "WEBSITE"] = "NOT_FOUND"
+                if pd.isna(df_result.loc[idx, "CNAE"]) or str(df_result.loc[idx, "CNAE"]).strip() == "":
+                    df_result.loc[idx, "CNAE"] = "NOT_FOUND"
+                
+                website = str(df_result.loc[idx, "WEBSITE"] or "").strip()
+                cnae = str(df_result.loc[idx, "CNAE"] or "").strip()
+                
+                if website == "NOT_FOUND" and cnae == "NOT_FOUND":
+                    df_result.loc[idx, "TIER3_STATUS"] = "NOT_FOUND"
+                elif website == "NOT_FOUND" or cnae == "NOT_FOUND":
+                    df_result.loc[idx, "TIER3_STATUS"] = "OK"  # Partial success
+                else:
+                    df_result.loc[idx, "TIER3_STATUS"] = "OK"
+        else:
+            for idx in df_processed.index:
+                df_result.loc[idx, "TIER3_STATUS"] = "SKIPPED"
+
+        # Write output Excel
+        logger.info(f"Writing output to: {output_path}")
+        write_excel(df_result, metadata, output_path, preserve_format=True)
+
+        # Add errors sheet if there are any errors
+        if errors_list:
+            logger.info(f"Writing {len(errors_list)} errors to Excel sheet...")
+            try:
+                from openpyxl import load_workbook
+                wb = load_workbook(output_path)
+                df_errors = pd.DataFrame(errors_list)
+                with pd.ExcelWriter(output_path, mode='a', engine='openpyxl', if_sheet_exists='replace') as writer:
+                    writer.book = wb
+                    df_errors.to_excel(writer, sheet_name='Errores', index=False)
+                wb.save(output_path)
+                wb.close()
+            except Exception as e:
+                logger.error(f"Error writing errors sheet: {e}")
+
+        # Calculate metrics
+        total_rows = len(df_result)
+        high_quality = (df_result["DATA_QUALITY"] == "High").sum() if "DATA_QUALITY" in df_result.columns else 0
+        emails_valid = df_result["EMAIL_VALID"].sum() if "EMAIL_VALID" in df_result.columns else 0
+
+        metrics = {
+            "total_processed": total_rows,
+            "high_quality": high_quality,
+            "emails_valid": emails_valid,
+            "errors_count": len(errors_list),
+        }
+
+        logger.info("✅ Processing complete!")
+        return df_result, metrics
+
+    except Exception as e:
+        logger.error(f"Error processing file: {e}", exc_info=True)
+        # Add to errors list
+        errors_list.append({
+            "row": "N/A",
+            "field": "SYSTEM",
+            "error": str(e)
+        })
+        raise

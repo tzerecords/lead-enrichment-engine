@@ -215,31 +215,65 @@ class ScoringEngine:
         score = (confidence_weight / total_weight) * 100.0 if total_weight > 0 else 0.0
         return round(score, 2)
 
-    def assign_data_quality(self, completeness: float, confidence: float) -> str:
-        """Devuelve High / Medium / Low según umbrales en YAML.
+    def assign_data_quality(self, completeness: float, confidence: float, row: pd.Series) -> str:
+        """Devuelve High / Medium / Low según utilidad de datos (menos agresivo).
 
         Args:
             completeness: Completeness score (0-100).
             confidence: Confidence score (0-100).
+            row: Row Series to check for useful data.
 
         Returns:
             Quality level: "High", "Medium", or "Low".
         """
-        high_config = self._config.quality_high
-        medium_config = self._config.quality_medium
-
-        min_completeness_high = high_config.get("min_completeness", 80)
-        min_confidence_high = high_config.get("min_confidence", 70)
-
-        min_completeness_medium = medium_config.get("min_completeness", 50)
-        min_confidence_medium = medium_config.get("min_confidence", 40)
-
-        if completeness >= min_completeness_high and confidence >= min_confidence_high:
+        # High: tiene datos realmente útiles
+        email_specific = str(row.get("EMAIL_SPECIFIC", "") or "").strip()
+        has_real_email = email_specific and email_specific not in ["", "NO_EMAIL_FOUND", "NOT_FOUND"]
+        
+        website = str(row.get("WEBSITE", "") or "").strip()
+        has_real_website = website and website not in ["", "NOT_FOUND", "NO_WEBSITE_FOUND"]
+        
+        cnae = str(row.get("CNAE", "") or "").strip()
+        has_real_cnae = cnae and cnae not in ["", "NOT_FOUND"]
+        
+        phone_valid = row.get("PHONE_VALID", False)
+        razon_social = str(row.get("RAZON_SOCIAL", "") or "").strip()
+        has_razon_social = razon_social and razon_social not in ["", "NOT_FOUND"]
+        
+        # High criteria: tiene EMAIL_SPECIFIC real OR (WEBSITE real y CNAE real) OR (PHONE_VALID True y RAZON_SOCIAL no vacío)
+        if has_real_email:
             return "High"
-        elif completeness >= min_completeness_medium and confidence >= min_confidence_medium:
+        if has_real_website and has_real_cnae:
+            return "High"
+        if phone_valid and has_razon_social:
+            return "High"
+        
+        # Medium: cumple al menos 2 de:
+        # - CIF_FORMAT_OK True
+        # - PHONE_VALID True
+        # - EMAIL original existe y parece válido (contiene "@")
+        # - RAZON_SOCIAL no vacío
+        criteria_count = 0
+        
+        cif_format_ok = row.get("CIF_FORMAT_OK", False)
+        if cif_format_ok:
+            criteria_count += 1
+        
+        if phone_valid:
+            criteria_count += 1
+        
+        email_original = str(row.get("EMAIL", "") or "").strip()
+        if email_original and "@" in email_original:
+            criteria_count += 1
+        
+        if has_razon_social:
+            criteria_count += 1
+        
+        if criteria_count >= 2:
             return "Medium"
-        else:
-            return "Low"
+        
+        # Low: resto
+        return "Low"
 
     def _build_sources_summary(self, row: pd.Series) -> str:
         """Devuelve una string tipo 'email:mx; website:search; cnae:chamber_of_commerce'.
@@ -289,7 +323,7 @@ class ScoringEngine:
         """
         completeness = self.calculate_completeness(row)
         confidence = self.calculate_confidence(row)
-        quality = self.assign_data_quality(completeness, confidence)
+        quality = self.assign_data_quality(completeness, confidence, row)
         sources = self._build_sources_summary(row)
 
         # Crear una copia para evitar SettingWithCopyWarning
