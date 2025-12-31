@@ -466,6 +466,14 @@ def write_excel(
     if rename_dict:
         df_highlight = df_highlight.rename(columns=rename_dict)
     
+    # CRÍTICO: Eliminar columnas duplicadas después del rename
+    # (puede pasar si "CIF/NIF", "CIF_NIF", "CIF" se renombran a lo mismo)
+    df_highlight = df_highlight.loc[:, ~df_highlight.columns.duplicated()]
+    
+    # Asegurar índice único (resetear si hay duplicados)
+    if not df_highlight.index.is_unique:
+        df_highlight = df_highlight.reset_index(drop=True)
+    
     # OBSERVACIONES: NEVER modify - must remain exactly as input
     # (removed truncation to preserve original)
     
@@ -501,17 +509,9 @@ def write_excel(
     
     summary_text = f"RESUMEN: {total_received} empresas recibidas | {red_count} descartadas (fila roja) | {low_priority_count} descartadas (baja prioridad) | {analyzed_count} analizadas | {with_new_data} con datos nuevos"
     
-    # Crear DataFrame con resumen como primera fila (merge todas las columnas en la primera)
-    # IMPORTANTE: Usar las columnas RENOMBRADAS (después del rename)
-    current_cols = list(df_highlight.columns)
-    summary_row = {col: summary_text if col == current_cols[0] else '' for col in current_cols}
-    summary_df = pd.DataFrame([summary_row])
-    # Concatenar: summary (fila 1) + headers (fila 2) + data (fila 3+)
-    # Pero pandas to_excel() escribe headers automáticamente, así que:
-    # Fila 1: summary (merged)
-    # Fila 2: headers (automático de pandas)
-    # Fila 3+: data
-    df_highlight_with_summary = pd.concat([summary_df, df_highlight], ignore_index=True)
+    # NO crear summary_df con concat - lo haremos directamente en Excel después
+    # Esto evita el error de "Reindexing only valid with uniquely valued Index objects"
+    # Guardamos el summary_text para usarlo después al formatear Excel
     
     # ============================================
     # Write Excel with 2 sheets (LEADS ENRIQUECIDOS first, then BBDD ORIGINAL)
@@ -521,6 +521,8 @@ def write_excel(
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         df_highlight.to_excel(writer, sheet_name='LEADS ENRIQUECIDOS', index=False)
         df_original.to_excel(writer, sheet_name='BBDD ORIGINAL', index=False)
+    
+    # summary_text se usa más abajo al formatear Excel
     
     # Now apply formatting
     wb = load_workbook(output_path)

@@ -396,11 +396,13 @@ if st.session_state.processing and uploaded_file is not None:
         
     except Exception as e:
         logger.error(f"Error processing file: {e}", exc_info=True)
+        # Limpiar UI y mostrar error limpio
+        spinner_placeholder.empty()
+        progress_bar.empty()
+        status_text.empty()
+        st.session_state.processing = False
         st.session_state.processing_error = str(e)
         st.session_state.processing_result = None
-        st.session_state.processing = False
-        progress_bar.progress(0)
-        status_text.error(f"❌ Error: {str(e)}")
         st.rerun()
     
     finally:
@@ -451,7 +453,15 @@ if not st.session_state.processing and processing_result is not None:
 processing_error = st.session_state.get('processing_error')
 if not st.session_state.processing and processing_error is not None:
     st.markdown("---")
-    st.error(f"❌ Error al procesar el archivo: {processing_error}")
+    error_msg = processing_error
+    # Simplificar mensajes técnicos para el usuario
+    if "Reindexing only valid with uniquely valued Index objects" in error_msg:
+        error_msg = "Error al generar el Excel: columnas duplicadas detectadas. Por favor, contacta al soporte técnico."
+    elif "InvalidIndexError" in error_msg:
+        error_msg = "Error al generar el Excel: problema con la estructura de datos. Por favor, contacta al soporte técnico."
+    
+    st.error(f"❌ **Error al procesar el archivo**\n\n{error_msg}")
+    st.info("💡 **Sugerencia:** Verifica que el archivo Excel tenga un formato válido y no contenga columnas duplicadas.")
     st.session_state.processing_error = None
 
 elif uploaded_file is None:
