@@ -413,17 +413,6 @@ def write_excel(
     if '🏢 RAZON_SOCIAL_NUEVA' in df_highlight.columns:
         df_highlight['🏢 RAZÓN SOCIAL'] = df_highlight['🏢 RAZON_SOCIAL_NUEVA']
     
-    # FIX 2: Reorganizar columnas con estructura clara
-    # Renombrar PRIORITY a PRIORIDAD con valores explicados
-    if 'PRIORITY' in df_highlight.columns:
-        df_highlight['PRIORIDAD'] = df_highlight['PRIORITY'].apply(
-            lambda x: f"Alta ({int(x)})" if pd.notna(x) and x >= 3 else (f"Media ({int(x)})" if pd.notna(x) and x >= 2 else f"Baja ({int(x)})" if pd.notna(x) else "")
-        )
-    
-    # Renombrar RAZON_SOCIAL_NUEVA
-    if '🏢 RAZON_SOCIAL_NUEVA' in df_highlight.columns:
-        df_highlight['🏢 RAZÓN SOCIAL'] = df_highlight['🏢 RAZON_SOCIAL_NUEVA']
-    
     # Select highlight columns - ORGANIZED with clear structure
     highlight_cols = []
     
@@ -452,6 +441,9 @@ def write_excel(
     sort_cols = []
     if 'PRIORITY' in df_highlight.columns:
         sort_cols.append('PRIORITY')
+    elif 'PRIORIDAD' in df_highlight.columns:
+        # Use PRIORITY for sorting if available, otherwise skip
+        pass
     if 'DATA_QUALITY' in df_highlight.columns:
         sort_cols.append('DATA_QUALITY')
     if 'CONSUMO' in df_highlight.columns:
@@ -593,7 +585,7 @@ def write_excel(
     ws_highlight = wb['LEADS ENRIQUECIDOS']
     
     # FIX 3: Format summary row (row 1) - bold, background color, merged cells
-    from openpyxl.styles import PatternFill, Alignment
+    from openpyxl.styles import Alignment
     summary_fill = PatternFill(start_color="FFE6E6FA", end_color="FFE6E6FA", fill_type="solid")  # Lavender
     
     # Merge cells in row 1 for summary (span all columns)
