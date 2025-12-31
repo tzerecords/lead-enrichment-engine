@@ -239,21 +239,21 @@ def write_excel(
         df_all = df.copy()
     
     # ============================================
-    # Calculate COLOR column based on processing status
+    # Calculate COLOR column - SIMPLE colors
     # ============================================
     def calculate_color_status(row_idx: int, row: pd.Series) -> str:
-        """Calculate COLOR status for a row.
+        """Calculate COLOR status for a row - simplified colors.
         
         Args:
             row_idx: DataFrame index (0-based).
             row: Series representing the row.
             
         Returns:
-            Color status string.
+            Color status string: VERDE, AMARILLO, GRIS, or ROJO
         """
         # Check if row was originally red (ignored)
         if row_idx in red_df_indices:
-            return "ROJO (IGNORADA)"
+            return "ROJO"
         
         # Get priority
         priority = row.get("PRIORITY")
@@ -262,19 +262,23 @@ def write_excel(
         else:
             priority = float(priority)
         
-        # If priority < 2, it's TIER1 only
-        if priority < 2:
-            return "MORADO (TIER1)"
+        # Check if has new data (phone from google_places/tavily, or email found)
+        has_new_phone = (
+            pd.notna(row.get("PHONE")) and 
+            str(row.get("PHONE_SOURCE", "")).strip() in ["google_places", "tavily"]
+        )
+        has_new_email = (
+            pd.notna(row.get("EMAIL_SPECIFIC")) and 
+            str(row.get("EMAIL_SPECIFIC", "")).strip() not in ["", "NO_EMAIL_FOUND", "NOT_FOUND"]
+        )
+        has_new_data = has_new_phone or has_new_email
         
-        # Priority >= 2: check if enriched with new data
-        has_website = pd.notna(row.get("WEBSITE")) and str(row.get("WEBSITE", "")).strip() not in ["", "NOT_FOUND", "NO_WEBSITE_FOUND"]
-        has_email = pd.notna(row.get("EMAIL_SPECIFIC")) and str(row.get("EMAIL_SPECIFIC", "")).strip() not in ["", "NO_EMAIL_FOUND", "NOT_FOUND"]
-        has_contact = pd.notna(row.get("CONTACT_NAME")) and str(row.get("CONTACT_NAME", "")).strip() not in ["", "NOT_FOUND", "NO_CONTACT_FOUND"]
+        # Priority >= 2: VERDE if has new data, AMARILLO if not
+        if priority >= 2:
+            return "VERDE" if has_new_data else "AMARILLO"
         
-        if has_website or has_email or has_contact:
-            return "VERDE (ENRIQUECIDA)"
-        else:
-            return "AMARILLO (SIN DATOS NUEVOS)"
+        # Priority < 2: GRIS
+        return "GRIS"
     
     # Calculate COLOR for all rows in df_all (includes red rows)
     df_all["COLOR"] = df_all.apply(
@@ -314,58 +318,106 @@ def write_excel(
     df_original = df_processed[[col for col in hoja1_columns if col in df_processed.columns]].copy()
     
     # ============================================
-    # HOJA 2: "HIGHLIGHT" - Filtrada y ordenada
+    # HOJA 2: "LEADS ENRIQUECIDOS" - Todos los prioritarios (PRIORITY >= 2)
     # ============================================
-    # Filter logic:
-    # - If force_tier2: include ALL non-red rows (all processed rows)
-    # - Otherwise: PRIORITY >= 3 AND DATA_QUALITY in ['High', 'Medium']
-    if force_tier2:
-        # Include all processed rows when force_tier2 is enabled
-        mask_highlight = pd.Series([True] * len(df_processed), index=df_processed.index)
-        logger.info("HIGHLIGHT: Including all processed rows (force_tier2=True)")
-    else:
-        # Normal filtering: high priority and quality
-        mask_highlight = pd.Series([True] * len(df_processed), index=df_processed.index)
-        
-        if 'PRIORITY' in df_processed.columns:
-            mask_highlight = mask_highlight & (df_processed['PRIORITY'] >= 3)
-        
-        if 'DATA_QUALITY' in df_processed.columns:
-            mask_highlight = mask_highlight & (df_processed['DATA_QUALITY'].isin(['High', 'Medium']))
-        
-        logger.info(f"HIGHLIGHT: Filtered to {mask_highlight.sum()}/{len(mask_highlight)} rows (PRIORITY>=3, DATA_QUALITY High/Medium)")
+    # Filter: ALL leads with PRIORITY >= 2 (all prioritized leads)
+    mask_highlight = pd.Series([True] * len(df_processed), index=df_processed.index)
+    
+    if 'PRIORITY' in df_processed.columns:
+        mask_highlight = mask_highlight & (df_processed['PRIORITY'] >= 2)
+    
+    logger.info(f"LEADS ENRIQUECIDOS: Filtered to {mask_highlight.sum()}/{len(mask_highlight)} rows (PRIORITY>=2)")
     
     df_highlight = df_processed[mask_highlight].copy()
     
-    # If HIGHLIGHT is empty and force_tier2, fallback to all processed rows
-    if len(df_highlight) == 0 and not force_tier2:
-        logger.warning("HIGHLIGHT is empty, falling back to all processed rows")
+    # If HIGHLIGHT is empty, fallback to all processed rows (shouldn't happen with PRIORITY>=2)
+    if len(df_highlight) == 0:
+        logger.warning("LEADS ENRIQUECIDOS is empty, falling back to all processed rows")
         df_highlight = df_processed.copy()
     
-    # Select highlight columns (new list with status columns)
+    # Create helper columns for HIGHLIGHT
+    # TEL_NUEVO: PHONE formateado si existe y es de google_places/tavily
+    if 'PHONE' in df_highlight.columns and 'PHONE_SOURCE' in df_highlight.columns:
+        df_highlight['📞 TEL_NUEVO'] = df_highlight.apply(
+            lambda row: row['PHONE'] if (
+                pd.notna(row.get('PHONE')) and 
+                str(row.get('PHONE_SOURCE', '')).strip() in ['google_places', 'tavily']
+            ) else '',
+            axis=1
+        )
+    else:
+        df_highlight['📞 TEL_NUEVO'] = ''
+    
+    # EMAIL_NUEVO: EMAIL_SPECIFIC si existe y no es NO_EMAIL_FOUND
+    if 'EMAIL_SPECIFIC' in df_highlight.columns:
+        df_highlight['📧 EMAIL_NUEVO'] = df_highlight.apply(
+            lambda row: row['EMAIL_SPECIFIC'] if (
+                pd.notna(row.get('EMAIL_SPECIFIC')) and 
+                str(row.get('EMAIL_SPECIFIC', '')).strip() not in ['', 'NO_EMAIL_FOUND', 'NOT_FOUND']
+            ) else '',
+            axis=1
+        )
+    else:
+        df_highlight['📧 EMAIL_NUEVO'] = ''
+    
+    # RAZON_SOCIAL_NUEVA: RAZON_SOCIAL si es de google_places/tavily
+    if 'RAZON_SOCIAL' in df_highlight.columns and 'RAZON_SOCIAL_SOURCE' in df_highlight.columns:
+        df_highlight['🏢 RAZON_SOCIAL_NUEVA'] = df_highlight.apply(
+            lambda row: row['RAZON_SOCIAL'] if (
+                pd.notna(row.get('RAZON_SOCIAL')) and 
+                str(row.get('RAZON_SOCIAL_SOURCE', '')).strip() in ['google_places', 'tavily']
+            ) else '',
+            axis=1
+        )
+    else:
+        df_highlight['🏢 RAZON_SOCIAL_NUEVA'] = ''
+    
+    # RESULTADO: resumen de qué se encontró
+    def get_resultado(row):
+        found = []
+        if pd.notna(row.get('📞 TEL_NUEVO')) and str(row.get('📞 TEL_NUEVO', '')).strip():
+            found.append('✅ Tel nuevo')
+        if pd.notna(row.get('📧 EMAIL_NUEVO')) and str(row.get('📧 EMAIL_NUEVO', '')).strip():
+            found.append('✅ Email')
+        if pd.notna(row.get('🏢 RAZON_SOCIAL_NUEVA')) and str(row.get('🏢 RAZON_SOCIAL_NUEVA', '')).strip():
+            found.append('✅ Razón social')
+        return ' | '.join(found) if found else '❌ Sin datos nuevos'
+    
+    df_highlight['RESULTADO'] = df_highlight.apply(get_resultado, axis=1)
+    
+    # Select highlight columns - SIMPLE and CLEAR
+    # Try multiple column name variations
     highlight_cols = [
-        'NOMBRE CLIENTE', 'CONSUMO', 'PRIORITY', 'DATA_QUALITY',
-        'EMAIL_SPECIFIC', 'CONTACT_NAME', 'WEBSITE', 'CNAE',
-        'ENRICHMENT_STATUS', 'ENRICHMENT_NOTES', 'OBSERVACIONES'
+        "NOMBRE CLIENTE",
+        "CIF/NIF",  # Try this first
+        "CIF_NIF",  # Fallback
+        "CIF",      # Another fallback
+        "CONSUMO",
+        "PRIORITY",
+        "📞 TEL_NUEVO",
+        "📧 EMAIL_NUEVO",
+        "🏢 RAZON_SOCIAL_NUEVA",
+        "TELEFONO 1",
+        "MAIL ",
+        "DIRECCIÓN CLIENTE",
+        "POBLACIÓN CLIENTE",
+        "RESULTADO"
     ]
+    
+    # Remove duplicates and non-existent columns
+    available_highlight_cols = []
+    seen = set()
+    for col in highlight_cols:
+        if col in df_highlight.columns and col not in seen:
+            available_highlight_cols.append(col)
+            seen.add(col)
     
     # Use available columns (only include columns that exist)
     available_highlight_cols = [col for col in highlight_cols if col in df_highlight.columns]
-    
-    # Add any missing important columns if they exist
-    optional_cols = ['TELEFONO 1', 'PHONE', 'LINKEDIN_COMPANY']
-    for col in optional_cols:
-        if col in df_highlight.columns and col not in available_highlight_cols:
-            available_highlight_cols.append(col)
-    
     df_highlight = df_highlight[available_highlight_cols].copy()
     
-    # Ensure NOT_FOUND/NO_EMAIL_FOUND values are preserved (don't modify them)
-    # OBSERVACIONES: Keep original format, only truncate if extremely long (>500 chars)
-    if 'OBSERVACIONES' in df_highlight.columns:
-        df_highlight['OBSERVACIONES'] = df_highlight['OBSERVACIONES'].apply(
-            lambda x: str(x)[:500] + '...' if pd.notna(x) and len(str(x)) > 500 else (str(x) if pd.notna(x) else '')
-        )
+    # OBSERVACIONES: NEVER modify - must remain exactly as input
+    # (removed truncation to preserve original)
     
     # Sort: PRIORITY DESC, DATA_QUALITY DESC, CONSUMO DESC
     sort_cols = []
@@ -390,7 +442,7 @@ def write_excel(
     # First, write all sheets using pandas
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         df_original.to_excel(writer, sheet_name='BBDD ORIGINAL', index=False)
-        df_highlight.to_excel(writer, sheet_name='HIGHLIGHT', index=False)
+        df_highlight.to_excel(writer, sheet_name='LEADS ENRIQUECIDOS', index=False)
         df_technical.to_excel(writer, sheet_name='DATOS_TÉCNICOS', index=False)
     
     # Now apply formatting
@@ -459,12 +511,12 @@ def write_excel(
             color_col_idx = idx
             break
     
-    # Define color mappings (ARGB format for openpyxl)
+    # Define color mappings - SIMPLE colors (ARGB format for openpyxl)
     color_fills = {
-        "ROJO (IGNORADA)": PatternFill(start_color="FFFF0000", end_color="FFFF0000", fill_type="solid"),  # Red
-        "MORADO (TIER1)": PatternFill(start_color="FF800080", end_color="FF800080", fill_type="solid"),  # Purple
-        "VERDE (ENRIQUECIDA)": PatternFill(start_color="FF00FF00", end_color="FF00FF00", fill_type="solid"),  # Green
-        "AMARILLO (SIN DATOS NUEVOS)": PatternFill(start_color="FFFFFF00", end_color="FFFFFF00", fill_type="solid"),  # Yellow
+        "VERDE": PatternFill(start_color="FF90EE90", end_color="FF90EE90", fill_type="solid"),  # Light green - Datos nuevos
+        "AMARILLO": PatternFill(start_color="FFFFEB9C", end_color="FFFFEB9C", fill_type="solid"),  # Light yellow - Prioritario sin datos
+        "GRIS": PatternFill(start_color="FFD9D9D9", end_color="FFD9D9D9", fill_type="solid"),  # Light gray - No prioritario
+        "ROJO": PatternFill(start_color="FFFFC7CE", end_color="FFFFC7CE", fill_type="solid"),  # Light red - Ignorado
     }
     
     # Apply background colors to entire rows based on COLOR column
@@ -487,7 +539,7 @@ def write_excel(
     # ============================================
     # Format HOJA 2: Headers bold, clean white background
     # ============================================
-    ws_highlight = wb['HIGHLIGHT']
+    ws_highlight = wb['LEADS ENRIQUECIDOS']
     
     # Make headers bold
     for cell in ws_highlight[1]:

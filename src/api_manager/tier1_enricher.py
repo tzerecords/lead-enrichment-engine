@@ -11,6 +11,8 @@ from .validators.phone.libphone_validator import LibPhoneValidator
 from .enrichers.phone.google_places import GooglePlacesEnricher
 from .enrichers.phone.web_scraper import WebScraperPhoneFinder
 from src.utils.config_loader import load_yaml_config
+import os
+import re
 
 
 class Tier1Enricher:
@@ -39,7 +41,7 @@ class Tier1Enricher:
             or ""
         )
 
-        google_places_limit = int(rate_limits.get("google_places", 200))
+        google_places_limit = int(rate_limits.get("google_places", 1000))
 
         # CIF validators (primary: regex_local, fallback: borme)
         self.cif_primary = RegexCIFValidator()
@@ -126,12 +128,45 @@ class Tier1Enricher:
             if company_data.get("error"):
                 error_msg = company_data.get("error", "UNKNOWN")
                 errors.append(f"GOOGLE_PLACES:{error_msg}")
-                # Try fallback web scraper for phone only
-                phone_result = self.phone_finder_fallback.find(
-                    company_name=company_name or razon_social or "",
-                    address=city,
-                    website=website,
-                )
+                
+                # Fallback 1: Try Tavily if available
+                phone_result = None
+                if self.tavily_client:
+                    try:
+                        query = f'"{company_name or razon_social}" teléfono contacto España'
+                        if city:
+                            query += f" {city}"
+                        tavily_response = self.tavily_client.search(query, max_results=3)
+                        
+                        if tavily_response.get("results"):
+                            # Extract phone from Tavily results using regex
+                            phone_pattern = r'(\+?34\s?[6-9]\d{8}|\d{9})'
+                            for result in tavily_response.get("results", []):
+                                content = result.get("content", "")
+                                matches = re.findall(phone_pattern, content)
+                                if matches:
+                                    phone = matches[0].replace(" ", "").replace("+34", "").strip()
+                                    if len(phone) == 9:
+                                        phone = f"+34{phone}"
+                                    phone_result = PhoneResult(
+                                        phone=phone,
+                                        confidence=0.7,
+                                        source="tavily",
+                                        extra={"tavily_url": result.get("url", "")}
+                                    )
+                                    razon_social_source = "tavily"
+                                    self.logger.info(f"Found phone via Tavily fallback: {phone}")
+                                    break
+                    except Exception as tavily_exc:
+                        self.logger.warning(f"Tavily fallback failed: {tavily_exc}")
+                
+                # Fallback 2: Try web scraper if Tavily didn't work
+                if phone_result is None or not phone_result.phone:
+                    phone_result = self.phone_finder_fallback.find(
+                        company_name=company_name or razon_social or "",
+                        address=city,
+                        website=website,
+                    )
             else:
                 # Use Google Places data
                 phone = company_data.get("phone") or company_data.get("international_phone")

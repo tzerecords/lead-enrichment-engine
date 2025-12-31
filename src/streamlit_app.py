@@ -60,11 +60,11 @@ def get_rate_limit_status():
             with open(rate_limit_file, 'r') as f:
                 data = json.load(f)
                 google_used = data.get("google_places", {}).get("used", 0)
-                google_limit = data.get("google_places", {}).get("limit", 200)
+                google_limit = data.get("google_places", {}).get("limit", 1000)
                 return google_used, google_limit
         except Exception:
-            return 0, 200
-    return 0, 200
+            return 0, 1000
+    return 0, 1000
 
 
 def get_api_status_text() -> str:
@@ -77,7 +77,7 @@ def get_api_status_text() -> str:
         try:
             from src.utils.config_loader import load_yaml_config
             tier1_config = load_yaml_config("config/tier1_config.yaml")
-            google_limit = tier1_config.get("tier1", {}).get("rate_limits", {}).get("google_places", 200)
+            google_limit = tier1_config.get("tier1", {}).get("rate_limits", {}).get("google_places", 1000)
             DAILY_LIMITS = {"google_places": google_limit, "tavily": 1000}
         except Exception:
             DAILY_LIMITS = {"google_places": 1000, "tavily": 1000}
@@ -237,7 +237,7 @@ if uploaded_file is not None and not st.session_state.processing:
 if st.session_state.processing and uploaded_file is not None:
     st.markdown("### ⚙️ Procesando...")
     
-    # Progress bar
+    # Progress bar with animation
     progress_bar = st.progress(0)
     status_text = st.empty()
     
@@ -255,32 +255,22 @@ if st.session_state.processing and uploaded_file is not None:
     st.session_state.processing_output_path = None
     
     try:
-        # Show progress messages
-        status_text.info("🔄 Iniciando procesamiento...")
-        progress_bar.progress(10)
+        # Show initial progress with spinner for visual feedback
+        with st.spinner("🔄 Procesando archivo..."):
+            status_text.info("📊 Analizando archivo y calculando prioridades...")
+            progress_bar.progress(0.1)
+            
+            # Process file with default configuration (this will take time)
+            df_result, metrics = process_file(
+                input_path=tmp_input_path,
+                output_path=tmp_output_path,
+                tiers=[1, 3],  # Tier2 se ejecuta automáticamente si hay PRIORITY>=2
+                enable_email_research=True,  # Siempre activo para Tier2
+                force_tier2=False  # Nunca forzar
+            )
         
-        status_text.info("📊 Analizando archivo y calculando prioridades...")
-        progress_bar.progress(30)
-        
-        status_text.info("🔍 Validando CIFs y buscando datos de empresas...")
-        progress_bar.progress(50)
-        
-        status_text.info("📧 Buscando emails para leads prioritarios...")
-        progress_bar.progress(70)
-        
-        status_text.info("✨ Enriqueciendo datos y validando información...")
-        progress_bar.progress(90)
-        
-        # Process file with default configuration
-        df_result, metrics = process_file(
-            input_path=tmp_input_path,
-            output_path=tmp_output_path,
-            tiers=[1, 3],  # Tier2 se ejecuta automáticamente si hay PRIORITY>=2
-            enable_email_research=True,  # Siempre activo para Tier2
-            force_tier2=False  # Nunca forzar
-        )
-        
-        progress_bar.progress(100)
+        # Final progress
+        progress_bar.progress(1.0)
         status_text.success("✅ Procesamiento completado!")
         
         # Store results

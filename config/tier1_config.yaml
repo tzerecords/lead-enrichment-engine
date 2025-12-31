@@ -13,7 +13,7 @@ tier1:
     fallback: "borme"
   
   rate_limits:
-    google_places: 200
+    google_places: 1000
     alert_threshold: 0.8
   
   retries:

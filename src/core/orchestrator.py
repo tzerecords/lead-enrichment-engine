@@ -53,71 +53,18 @@ def run_pipeline(
         df_result["PRIORITY"] = None
         df_result.loc[mask_process, "PRIORITY"] = priorities.values
 
-    # 2) Tier1 validation (CIF/NIF/NIE + Phone) - append to OBSERVACIONES
+    # 2) Tier1 validation (CIF/NIF/NIE + Phone)
+    # NOTE: OBSERVACIONES column is NEVER modified - it must remain exactly as in input
     logger.info("Running Tier1 validation (CIF/NIF/NIE + Phone)...")
     cif_validator = CifValidator()
     phone_validator = PhoneValidator()
 
-    # Ensure OBSERVACIONES column exists
+    # Ensure OBSERVACIONES column exists (but DO NOT modify it)
     if "OBSERVACIONES" not in df_result.columns:
         df_result["OBSERVACIONES"] = ""
 
-    # Process each row and append validation results to OBSERVACIONES
-    try:
-        from tqdm import tqdm
-        iterator = tqdm(df_process.iterrows(), total=len(df_process), desc="Tier1 validation")
-    except Exception:
-        iterator = df_process.iterrows()
-
-    # Process each row and update OBSERVACIONES directly
-    for idx, row in iterator:
-        observaciones_parts = []
-        # Get original OBSERVACIONES from df_result using the same index
-        try:
-            original_obs = str(df_result.loc[idx, "OBSERVACIONES"] or "").strip()
-        except KeyError:
-            # If index doesn't exist in df_result, skip (shouldn't happen, but safety check)
-            logger.warning(f"Index {idx} not found in df_result, skipping OBSERVACIONES update")
-            continue
-
-        # CIF/NIF/NIE validation
-        cif_value = str(row.get("CIF/NIF", "")).strip()
-        if cif_value:
-            cif_result = cif_validator.validate(cif_value)
-            if cif_result.is_valid:
-                entity_info = f", {cif_result.entity_type}" if cif_result.entity_type else ""
-                observaciones_parts.append(
-                    f"CIF/NIF/NIE: {cif_result.formatted_id} ({cif_result.id_type}{entity_info}) ✓"
-                )
-            else:
-                observaciones_parts.append(
-                    f"CIF/NIF/NIE: {cif_value} - {cif_result.error or 'INVALID'}"
-                )
-
-        # Phone validation
-        phone_value = str(row.get("TELÉFONO", "")).strip()
-        if phone_value:
-            phone_result = phone_validator.validate(phone_value)
-            if phone_result.is_valid:
-                observaciones_parts.append(
-                    f"Teléfono: {phone_result.international_format} ({phone_result.phone_type}) ✓"
-                )
-            else:
-                observaciones_parts.append(
-                    f"Teléfono: {phone_value} - {phone_result.error or 'INVALID'}"
-                )
-
-        # Append to OBSERVACIONES (preserve existing content)
-        if observaciones_parts:
-            new_obs = " | ".join(observaciones_parts)
-            if original_obs:
-                final_obs = f"{original_obs} | {new_obs}"
-            else:
-                final_obs = new_obs
-            
-            # Write directly to df_result using .loc
-            df_result.loc[idx, "OBSERVACIONES"] = final_obs
-            logger.debug(f"Updated OBSERVACIONES for index {idx}: {final_obs[:50]}...")
+    # Validation is done by Tier1Enricher, no need to duplicate here
+    # OBSERVACIONES remains untouched
 
     # 3) Tier1 enrichment (existing phone/company enrichment)
     logger.info("Running Tier1 enrichment (phone finder + company name)...")
@@ -148,9 +95,9 @@ def run_pipeline(
     logger.info(f"Tier1 enriched DataFrame columns: {list(df_enriched.columns)}")
     logger.info(f"Tier1 enriched DataFrame shape: {df_enriched.shape}")
 
-    # Update enriched columns, but preserve OBSERVACIONES (already updated by validators)
+    # Update enriched columns, but NEVER touch OBSERVACIONES (must remain exactly as input)
     for col in df_enriched.columns:
-        if col != "OBSERVACIONES":  # Don't overwrite OBSERVACIONES - it was already updated by validators
+        if col != "OBSERVACIONES":  # OBSERVACIONES is NEVER modified
             if col not in df_result.columns:
                 df_result[col] = None  # Initialize column if it doesn't exist
                 logger.info(f"Initialized new column: {col}")
@@ -253,7 +200,7 @@ def run_tier2_enrichment(
 
     logger.info(f"Tier2 enrichment: processing {len(df_tier2)} leads with priority>=2")
 
-    # Ensure OBSERVACIONES column exists
+    # Ensure OBSERVACIONES column exists (but DO NOT modify it)
     if "OBSERVACIONES" not in df_result.columns:
         df_result["OBSERVACIONES"] = ""
 
@@ -284,43 +231,10 @@ def run_tier2_enrichment(
             df_result[col] = None
 
     # Update only Tier2 rows
+    # NOTE: OBSERVACIONES is NEVER modified - all Tier2 info is in separate columns
     for col in df_tier2_enriched.columns:
         if col in tier2_columns:
             df_result.loc[indices, col] = df_tier2_enriched[col].values
-
-    # Append Tier2 enrichment results to OBSERVACIONES
-    for i, record in enumerate(records):
-        idx = indices[i]
-        observaciones_parts = []
-        original_obs = str(df_result.loc[idx, "OBSERVACIONES"] or "").strip()
-
-        # Add email research info
-        if record.get("EMAIL_RESEARCHED"):
-            obs_parts = [f"Email investigado: {record.get('EMAIL_RESEARCHED')}"]
-            if record.get("EMAIL_SOURCE"):
-                obs_parts.append(f"Fuente: {record.get('EMAIL_SOURCE')}")
-            if record.get("RESEARCH_NOTES"):
-                obs_parts.append(record.get("RESEARCH_NOTES"))
-            observaciones_parts.append(" | ".join(obs_parts))
-
-        # Add contact info
-        if record.get("CONTACT_NAME"):
-            contact_info = f"Contacto: {record.get('CONTACT_NAME')}"
-            if record.get("CONTACT_TITLE"):
-                contact_info += f" ({record.get('CONTACT_TITLE')})"
-            observaciones_parts.append(contact_info)
-
-        # Add LinkedIn
-        if record.get("LINKEDIN_COMPANY"):
-            observaciones_parts.append(f"LinkedIn: {record.get('LINKEDIN_COMPANY')}")
-
-        # Append to OBSERVACIONES
-        if observaciones_parts:
-            new_obs = " | ".join(observaciones_parts)
-            if original_obs:
-                df_result.loc[idx, "OBSERVACIONES"] = f"{original_obs} | {new_obs}"
-            else:
-                df_result.loc[idx, "OBSERVACIONES"] = new_obs
 
     return df_result, tier2_report
 
@@ -572,6 +486,20 @@ def process_file(
         else:
             for idx in df_processed.index:
                 df_result.loc[idx, "TIER3_STATUS"] = "SKIPPED"
+
+        # Clean up PHONE_SOURCE: replace "web_scraper" (garbage) with proper values
+        if "PHONE_SOURCE" in df_result.columns:
+            mask_web_scraper = df_result["PHONE_SOURCE"] == "web_scraper"
+            # If phone exists but source is web_scraper, mark as original or NOT_SEARCHED
+            for idx in df_result[mask_web_scraper].index:
+                phone = df_result.loc[idx, "PHONE"]
+                if pd.notna(phone) and str(phone).strip():
+                    # Phone exists but source is garbage - mark as original
+                    df_result.loc[idx, "PHONE_SOURCE"] = "original"
+                else:
+                    # No phone and source is garbage - mark as NOT_SEARCHED
+                    df_result.loc[idx, "PHONE_SOURCE"] = "NOT_SEARCHED"
+            logger.info(f"Cleaned {mask_web_scraper.sum()} PHONE_SOURCE entries from 'web_scraper'")
 
         # Write output Excel
         logger.info(f"Writing output to: {output_path}")
