@@ -365,7 +365,8 @@ def write_excel(
     else:
         df_highlight['📞 TEL_NUEVO'] = ''
     
-    # EMAIL_NUEVO: EMAIL_SPECIFIC si existe y no es NO_EMAIL_FOUND
+    # EMAIL_NUEVO: EMAIL_SPECIFIC o EMAIL_FOUND si existe y no es NO_EMAIL_FOUND
+    df_highlight['📧 EMAIL_NUEVO'] = ''
     if 'EMAIL_SPECIFIC' in df_highlight.columns:
         df_highlight['📧 EMAIL_NUEVO'] = df_highlight.apply(
             lambda row: row['EMAIL_SPECIFIC'] if (
@@ -374,8 +375,14 @@ def write_excel(
             ) else '',
             axis=1
         )
-    else:
-        df_highlight['📧 EMAIL_NUEVO'] = ''
+    # También usar EMAIL_FOUND si existe (de Tavily complementary search)
+    if 'EMAIL_FOUND' in df_highlight.columns:
+        for idx in df_highlight.index:
+            email_found = df_highlight.loc[idx, 'EMAIL_FOUND']
+            email_nuevo = df_highlight.loc[idx, '📧 EMAIL_NUEVO']
+            # Si EMAIL_NUEVO está vacío pero EMAIL_FOUND tiene valor, usarlo
+            if (pd.isna(email_nuevo) or str(email_nuevo).strip() == '') and pd.notna(email_found) and str(email_found).strip() not in ['', 'NO_EMAIL_FOUND', 'NOT_FOUND']:
+                df_highlight.loc[idx, '📧 EMAIL_NUEVO'] = email_found
     
     # RAZON_SOCIAL_NUEVA: RAZON_SOCIAL si es de google_places/tavily
     if 'RAZON_SOCIAL' in df_highlight.columns and 'RAZON_SOCIAL_SOURCE' in df_highlight.columns:
