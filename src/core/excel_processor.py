@@ -592,15 +592,19 @@ def write_excel(
     summary_fill = PatternFill(start_color="FFE6E6FA", end_color="FFE6E6FA", fill_type="solid")  # Lavender
     
     # Merge cells in row 1 for summary (span all columns)
-    ws_highlight.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(highlight_cols))
+    num_cols = len(list(df_highlight.columns))
+    ws_highlight.merge_cells(start_row=1, start_column=1, end_row=1, end_column=num_cols)
     summary_cell = ws_highlight.cell(row=1, column=1)
     summary_cell.fill = summary_fill
     summary_cell.font = Font(bold=True, size=11)
     summary_cell.alignment = Alignment(horizontal='left', vertical='center')
     
-    # Make headers bold (row 2, since row 1 is summary)
+    # Make headers bold (row 2, since row 1 is summary) and add background color
+    header_fill = PatternFill(start_color="FFD3D3D3", end_color="FFD3D3D3", fill_type="solid")  # Light gray
     for cell in ws_highlight[2]:
-        cell.font = Font(bold=True)
+        cell.font = Font(bold=True, size=10)
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
     
     # Auto-adjust widths
     _auto_adjust_column_widths(ws_highlight)

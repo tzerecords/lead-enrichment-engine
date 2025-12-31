@@ -249,6 +249,8 @@ def run_tier2_enrichment(
 
 def run_tavily_complementary_search(
     df: pd.DataFrame,
+    progress_callback: callable = None,
+    check_stop_callback: callable = None,
 ) -> pd.DataFrame:
     """Run complementary Tavily search for PRIORITY >= 2 leads.
     
@@ -409,9 +411,28 @@ def run_tavily_complementary_search(
     batch_size = 8
     all_results = []
     
+    total_batches = (len(leads_to_process) + batch_size - 1) // batch_size
     for i in range(0, len(leads_to_process), batch_size):
         batch = leads_to_process[i:i + batch_size]
-        logger.info(f"Processing Tavily batch {i//batch_size + 1}/{(len(leads_to_process) + batch_size - 1)//batch_size} ({len(batch)} leads)")
+        batch_num = i // batch_size + 1
+        logger.info(f"Processing Tavily batch {batch_num}/{total_batches} ({len(batch)} leads)")
+        
+        # Update progress during Tavily
+        if progress_callback:
+            # Estimate progress: Tier1 was ~50%, Tavily is ~30%, Tier3 is ~20%
+            # So Tavily starts at 50% and goes to 80%
+            tavily_progress_start = 0.5
+            tavily_progress_end = 0.8
+            progress = tavily_progress_start + (batch_num / total_batches) * (tavily_progress_end - tavily_progress_start)
+            try:
+                progress_callback(int(progress * len(leads_to_process)), len(leads_to_process), f"Buscando con Tavily (batch {batch_num}/{total_batches})...")
+            except Exception as e:
+                logger.warning(f"Progress callback error during Tavily: {e}")
+        
+        # Check stop
+        if check_stop_callback and check_stop_callback():
+            logger.info("Stop requested by user during Tavily search")
+            raise KeyboardInterrupt("Processing stopped by user")
         
         try:
             batch_results = asyncio.run(process_batch(batch))
@@ -420,7 +441,9 @@ def run_tavily_complementary_search(
             # Log results for debugging
             phones_found = sum(1 for r in batch_results if r.get("phone"))
             emails_found = sum(1 for r in batch_results if r.get("email"))
-            logger.info(f"Tavily batch {i//batch_size + 1}: {phones_found} phones, {emails_found} emails found")
+            logger.info(f"Tavily batch {batch_num}: {phones_found} phones, {emails_found} emails found")
+        except KeyboardInterrupt:
+            raise
         except Exception as e:
             logger.error(f"Error processing Tavily batch: {e}")
             continue
@@ -564,7 +587,11 @@ def process_file(
         # Run complementary Tavily search for PRIORITY >= 2 (after Tier1, before Tier2)
         # This searches for phone (if Google didn't find it) and email (always for PRIORITY >= 2)
         logger.info("Running complementary Tavily search for PRIORITY >= 2 leads...")
-        df_result = run_tavily_complementary_search(df_result)
+        df_result = run_tavily_complementary_search(
+            df_result,
+            progress_callback=progress_callback,
+            check_stop_callback=check_stop_callback
+        )
         
         # Run Tier2 if requested
         tier2_report = None
