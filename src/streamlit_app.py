@@ -133,9 +133,12 @@ def format_time_ago(timestamp: datetime) -> str:
         return f"hace {minutes} minutos"
 
 
-# Title - Centered
-st.markdown("<h1 style='text-align: center;'>📊 Lead Enrichment Engine</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: #666;'>Enriquece y valida tus leads B2B</p>", unsafe_allow_html=True)
+# Title - Centered with professional font
+st.markdown("""
+    <h1 style='text-align: center; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; font-weight: 600; letter-spacing: -0.5px;'>
+    Enriquecimiento de Leads
+    </h1>
+    """, unsafe_allow_html=True)
 
 st.markdown("---")
 
@@ -162,7 +165,7 @@ if st.session_state.processed_files:
 
 # File uploader
 uploaded_file = st.file_uploader(
-    "Sube tu archivo Excel (.xlsx)",
+    "Carga tu archivo Excel (.xlsx)",
     type=["xlsx"],
     help="Selecciona un archivo Excel con los leads a procesar"
 )
@@ -199,8 +202,8 @@ if uploaded_file is not None:
     else:
         st.info(f"📄 Archivo cargado: **{uploaded_file.name}** ({st.session_state.num_rows} leads)")
 
-# Sección "¿Cómo funciona?"
-with st.expander("ℹ️ ¿Cómo funciona?", expanded=False):
+# Sección "Cómo funciona?"
+with st.expander("ℹ️ Cómo funciona", expanded=False):
     st.markdown("""
     **¿Qué hace esta herramienta?**
     - Valida CIFs y corrige datos de empresas
@@ -366,4 +369,4 @@ if not st.session_state.processing and processing_error is not None:
     st.session_state.processing_error = None
 
 elif uploaded_file is None:
-    st.info("👆 Por favor, sube un archivo Excel para comenzar.")
+    st.info("👆 Por favor, carga un archivo Excel para comenzar.")
