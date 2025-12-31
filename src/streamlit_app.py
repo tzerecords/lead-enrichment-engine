@@ -249,15 +249,12 @@ with st.expander("ℹ️ Cómo funciona", expanded=False):
     - 🟣 Morado: Lead validado (baja prioridad)
     - 🟡 Amarillo: No se encontraron datos nuevos
     - 🔴 Rojo: Lead ignorado (fila original roja)
-    """)
     
-    # Links a APIs
-    with st.expander("🔗 Gestionar APIs"):
-        st.markdown("""
-        - [Google Cloud Console](https://console.cloud.google.com/google/maps-apis/metrics?authuser=5&project=project-5bcbc3d3-652e-4f80-876&supportedpurview=project)
-        - [Tavily Dashboard](https://app.tavily.com/home)
-        - [OpenAI API Keys](https://platform.openai.com/settings/proj_MR51aZ02sjbHHaLo7MRk1xN8/api-keys)
-        """)
+    **🔗 Gestionar APIs:**
+    - [Google Cloud Console](https://console.cloud.google.com/google/maps-apis/metrics?authuser=5&project=project-5bcbc3d3-652e-4f80-876&supportedpurview=project)
+    - [Tavily Dashboard](https://app.tavily.com/home)
+    - [OpenAI API Keys](https://platform.openai.com/settings/proj_MR51aZ02sjbHHaLo7MRk1xN8/api-keys)
+    """)
 
 # Estado de APIs - discreto
 api_status = get_api_status_text()
