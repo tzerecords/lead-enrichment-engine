@@ -173,13 +173,6 @@ def read_excel(filepath: Path) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     
     logger.debug(f"Created metadata with filepath: {metadata['filepath']}")
     logger.debug(f"Filepath exists: {filepath_obj.exists()}")
-    
-    # Debug logging for metadata (workbook_context equivalent)
-    logger.info(f"DEBUG read_excel: returning metadata with keys: {metadata.keys() if metadata else 'None'}")
-    logger.info(f"DEBUG read_excel: metadata type: {type(metadata)}")
-    logger.info(f"DEBUG read_excel: metadata is None? {metadata is None}")
-    if metadata is not None:
-        logger.info(f"DEBUG read_excel: metadata keys: {metadata.keys() if isinstance(metadata, dict) else 'NOT A DICT'}")
 
     return df, metadata
 
@@ -336,32 +329,84 @@ def write_excel(
         df_highlight = df_processed.copy()
     
     # Create helper columns for HIGHLIGHT
-    # TEL_NUEVO: PHONE formateado si existe y es de google_places/tavily
-    if 'PHONE' in df_highlight.columns and 'PHONE_SOURCE' in df_highlight.columns:
-        df_highlight['📞 TEL_NUEVO'] = df_highlight.apply(
-            lambda row: row['PHONE'] if (
-                pd.notna(row.get('PHONE')) and 
-                str(row.get('PHONE_SOURCE', '')).strip() in ['google_places', 'tavily']
-            ) else '',
-            axis=1
-        )
+    # TEL_NUEVO: Recopilar teléfonos nuevos Y validados (originales confirmados por Google/Tavily)
+    def normalize_phone(phone_str):
+        """Normaliza un teléfono a formato sin prefijo para comparación."""
+        if pd.isna(phone_str) or phone_str == '':
+            return ''
+        phone_str = str(phone_str).strip()
+        # Remover +34, 34, espacios, guiones
+        if phone_str.startswith('+34'):
+            phone_str = phone_str[3:].strip()
+        elif phone_str.startswith('34'):
+            phone_str = phone_str[2:].strip()
+        # Remover espacios, guiones, puntos
+        phone_str = phone_str.replace(' ', '').replace('-', '').replace('.', '')
+        return phone_str
+    
+    def format_phone_for_display(phone_str, keep_prefix=False):
+        """Formatea un teléfono para mostrar (sin +34 a menos que keep_prefix=True)."""
+        if pd.isna(phone_str) or phone_str == '':
+            return ''
+        phone_str = str(phone_str).strip()
+        normalized = normalize_phone(phone_str)
+        if len(normalized) == 9:
+            if keep_prefix:
+                return f"+34 {normalized[0:3]} {normalized[3:6]} {normalized[6:]}"
+            else:
+                return normalized
+        return normalized if normalized else phone_str
+    
+    def collect_valid_phones(row):
+        """Recopila todos los teléfonos válidos: nuevos encontrados + originales validados."""
+        valid_phones = []
+        phones_set = set()  # Para evitar duplicados
         
-        # FIX 1: Formatear TEL_NUEVO como string para evitar notación científica
-        def format_phone(phone):
-            if pd.isna(phone) or phone == '':
-                return ''
-            phone_str = str(phone).strip()
-            # Remover +34 si existe
-            if phone_str.startswith('+34'):
-                phone_str = phone_str[3:].strip()
-            elif phone_str.startswith('34'):
-                phone_str = phone_str[2:].strip()
-            # Asegurar que es string y formatear
-            if len(phone_str) == 9:
-                return f"+34 {phone_str[0:3]} {phone_str[3:6]} {phone_str[6:]}"
-            return phone_str
+        # 1. Teléfonos nuevos encontrados por Google/Tavily
+        if 'PHONE' in row.index and 'PHONE_SOURCE' in row.index:
+            phone_new = row.get('PHONE')
+            phone_source = str(row.get('PHONE_SOURCE', '')).strip()
+            if pd.notna(phone_new) and phone_source in ['google_places', 'tavily']:
+                normalized = normalize_phone(phone_new)
+                if normalized and normalized not in phones_set:
+                    phones_set.add(normalized)
+                    valid_phones.append(phone_new)
         
-        df_highlight['📞 TEL_NUEVO'] = df_highlight['📞 TEL_NUEVO'].apply(format_phone)
+        # 2. Teléfono original validado (si TELEFONO 1 coincide con PHONE encontrado)
+        if 'TELEFONO 1' in row.index:
+            telefono_original = row.get('TELEFONO 1')
+            if pd.notna(telefono_original) and str(telefono_original).strip():
+                original_normalized = normalize_phone(telefono_original)
+                # Verificar si el original fue confirmado (coincide con PHONE encontrado)
+                if 'PHONE' in row.index:
+                    phone_found = row.get('PHONE')
+                    phone_source = str(row.get('PHONE_SOURCE', '')).strip()
+                    if pd.notna(phone_found) and phone_source in ['google_places', 'tavily']:
+                        found_normalized = normalize_phone(phone_found)
+                        if original_normalized == found_normalized and original_normalized:
+                            # El original fue validado, añadirlo si no está ya
+                            if original_normalized not in phones_set:
+                                phones_set.add(original_normalized)
+                                valid_phones.append(telefono_original)
+        
+        # Formatear todos los teléfonos
+        # Determinar si mantener +34: solo si el original lo tenía
+        keep_prefix = False
+        if 'TELEFONO 1' in row.index:
+            telefono_original = row.get('TELEFONO 1')
+            if pd.notna(telefono_original):
+                orig_str = str(telefono_original).strip()
+                if orig_str.startswith('+34') or orig_str.startswith('34'):
+                    keep_prefix = True
+        
+        # Formatear y unir con comas
+        formatted_phones = [format_phone_for_display(p, keep_prefix=keep_prefix) for p in valid_phones]
+        formatted_phones = [p for p in formatted_phones if p]  # Filtrar vacíos
+        
+        return ', '.join(formatted_phones) if formatted_phones else ''
+    
+    if 'PHONE' in df_highlight.columns or 'TELEFONO 1' in df_highlight.columns:
+        df_highlight['📞 TEL_NUEVO'] = df_highlight.apply(collect_valid_phones, axis=1)
     else:
         df_highlight['📞 TEL_NUEVO'] = ''
     
@@ -396,22 +441,103 @@ def write_excel(
     else:
         df_highlight['🏢 RAZON_SOCIAL_NUEVA'] = ''
     
-    # RESULTADO: resumen de qué se encontró (usar columnas renombradas)
+    # RESULTADO: resumen de qué se encontró (nuevos, verificados o mejorados)
     def get_resultado(row):
         found = []
-        if pd.notna(row.get('📞 TEL_NUEVO')) and str(row.get('📞 TEL_NUEVO', '')).strip():
-            found.append('✅ Tel nuevo')
+        
+        # Verificar teléfonos (nuevos o validados)
+        tel_nuevo = row.get('📞 TEL_NUEVO')
+        if pd.notna(tel_nuevo) and str(tel_nuevo).strip():
+            # Determinar si es nuevo o validado
+            phone_found = row.get('PHONE')
+            phone_source = str(row.get('PHONE_SOURCE', '')).strip()
+            telefono_original = row.get('TELEFONO 1')
+            
+            is_validated = False
+            if pd.notna(phone_found) and pd.notna(telefono_original) and phone_source in ['google_places', 'tavily']:
+                # Normalizar para comparar
+                def norm(p):
+                    if pd.isna(p): return ''
+                    p_str = str(p).strip()
+                    if p_str.startswith('+34'): p_str = p_str[3:].strip()
+                    elif p_str.startswith('34'): p_str = p_str[2:].strip()
+                    return p_str.replace(' ', '').replace('-', '').replace('.', '')
+                
+                if norm(phone_found) == norm(telefono_original):
+                    is_validated = True
+            
+            if is_validated:
+                found.append('✅ Tel validado')
+            else:
+                found.append('✅ Tel nuevo')
+        
+        # Verificar emails nuevos
         if pd.notna(row.get('📧 EMAIL_NUEVO')) and str(row.get('📧 EMAIL_NUEVO', '')).strip():
-            found.append('✅ Email')
-        # Usar la columna renombrada si existe, sino la original
+            found.append('✅ Email nuevo')
+        
+        # Verificar razones sociales nuevas
         razon_col = '🏢 RAZÓN SOCIAL' if '🏢 RAZÓN SOCIAL' in row.index else '🏢 RAZON_SOCIAL_NUEVA'
         if pd.notna(row.get(razon_col)) and str(row.get(razon_col, '')).strip():
-            found.append('✅ Razón social')
+            found.append('✅ Razón social nueva')
+        
         return ' | '.join(found) if found else '❌ Sin datos nuevos'
     
     df_highlight['RESULTADO'] = df_highlight.apply(get_resultado, axis=1)
     
-    # FIX 2: Reorganizar columnas con estructura clara
+    # ============================================
+    # Calcular "with_new_data" ANTES del rename y selección de columnas
+    # para asegurar que RESULTADO existe con su nombre original
+    # ============================================
+    total_received = len(df_all)
+    red_count = len(red_df_indices)
+    analyzed_count_before_filter = len(df_highlight)
+    
+    # Contar leads con datos nuevos usando RESULTADO (nombre original, antes del rename)
+    if 'RESULTADO' in df_highlight.columns:
+        with_new_data = (df_highlight['RESULTADO'] != '❌ Sin datos nuevos').sum()
+        logger.info(f"Calculated with_new_data from RESULTADO: {with_new_data}/{analyzed_count_before_filter} leads have new data")
+    else:
+        # Fallback: contar directamente si RESULTADO no existe (no debería pasar)
+        logger.warning("RESULTADO column not found, counting with_new_data manually")
+        with_new_data = 0
+        for idx in df_highlight.index:
+            has_new_data = False
+            # Verificar teléfono nuevo o validado
+            if '📞 TEL_NUEVO' in df_highlight.columns:
+                tel_nuevo = df_highlight.loc[idx, '📞 TEL_NUEVO']
+                if pd.notna(tel_nuevo) and str(tel_nuevo).strip():
+                    has_new_data = True
+            # Verificar email nuevo
+            if '📧 EMAIL_NUEVO' in df_highlight.columns:
+                email_nuevo = df_highlight.loc[idx, '📧 EMAIL_NUEVO']
+                if pd.notna(email_nuevo) and str(email_nuevo).strip():
+                    has_new_data = True
+            # Verificar razón social nueva
+            razon_col = '🏢 RAZÓN SOCIAL' if '🏢 RAZÓN SOCIAL' in df_highlight.columns else '🏢 RAZON_SOCIAL_NUEVA'
+            if razon_col in df_highlight.columns:
+                razon_nueva = df_highlight.loc[idx, razon_col]
+                if pd.notna(razon_nueva) and str(razon_nueva).strip():
+                    has_new_data = True
+            if has_new_data:
+                with_new_data += 1
+        logger.info(f"Calculated with_new_data manually: {with_new_data}/{analyzed_count_before_filter} leads have new data")
+    
+    # Sort ANTES del rename para usar nombres de columnas originales
+    # Sort: CONSUMO DESC (más alto primero), luego PRIORITY DESC, luego DATA_QUALITY DESC
+    sort_cols = []
+    # Priorizar CONSUMO (más alto primero)
+    if 'CONSUMO' in df_highlight.columns:
+        sort_cols.append('CONSUMO')
+    if 'PRIORITY' in df_highlight.columns:
+        sort_cols.append('PRIORITY')
+    if 'DATA_QUALITY' in df_highlight.columns:
+        sort_cols.append('DATA_QUALITY')
+    
+    if sort_cols:
+        df_highlight = df_highlight.sort_values(by=sort_cols, ascending=[False] * len(sort_cols))
+        logger.info(f"Sorted by: {sort_cols} (descending)")
+    
+    # Reorganizar columnas con estructura clara
     # Renombrar PRIORITY a PRIORIDAD con valores explicados
     if 'PRIORITY' in df_highlight.columns:
         df_highlight['PRIORIDAD'] = df_highlight['PRIORITY'].apply(
@@ -425,8 +551,8 @@ def write_excel(
     # Select highlight columns - ORGANIZED with clear structure
     highlight_cols = []
     
-    # Sección 1: Información básica
-    for col in ["NOMBRE CLIENTE", "CONSUMO", "PRIORIDAD"]:
+    # Sección 1: Información básica (sin PRIORIDAD, va al final)
+    for col in ["NOMBRE CLIENTE", "CONSUMO"]:
         if col in df_highlight.columns:
             highlight_cols.append(col)
     
@@ -440,18 +566,22 @@ def write_excel(
         if col in df_highlight.columns and col not in highlight_cols:
             highlight_cols.append(col)
     
+    # Sección 4: PRIORIDAD al final
+    if "PRIORIDAD" in df_highlight.columns:
+        highlight_cols.append("PRIORIDAD")
+    
     # Use available columns
     df_highlight = df_highlight[highlight_cols].copy()
     
-    # FIX: Rename columns with descriptive headers explaining each output
+    # Rename columns with descriptive headers explaining each output
     column_descriptions = {
         "NOMBRE CLIENTE": "NOMBRE CLIENTE",
         "CONSUMO": "CONSUMO (MWh)",
         "PRIORIDAD": "PRIORIDAD (Alta=3, Media=2, Baja=1)",
-        "📞 TEL_NUEVO": "📞 TELÉFONO NUEVO (encontrado con Google/Tavily)",
+        "📞 TEL_NUEVO": "📞 TELÉFONO (nuevo o validado por Google/Tavily)",
         "📧 EMAIL_NUEVO": "📧 EMAIL NUEVO (encontrado con Tavily)",
         "🏢 RAZÓN SOCIAL": "🏢 RAZÓN SOCIAL NUEVA (encontrada con Google/Tavily)",
-        "RESULTADO": "RESULTADO (qué datos nuevos se encontraron)",
+        "RESULTADO": "RESULTADO (datos nuevos, verificados o mejorados)",
         "TELEFONO 1": "TELEFONO 1 (original del archivo)",
         "MAIL ": "MAIL (original del archivo)",
         "CIF/NIF": "CIF/NIF (original del archivo)",
@@ -466,7 +596,7 @@ def write_excel(
     if rename_dict:
         df_highlight = df_highlight.rename(columns=rename_dict)
     
-    # CRÍTICO: Eliminar columnas duplicadas después del rename
+    # Eliminar columnas duplicadas después del rename
     # (puede pasar si "CIF/NIF", "CIF_NIF", "CIF" se renombran a lo mismo)
     df_highlight = df_highlight.loc[:, ~df_highlight.columns.duplicated()]
     
@@ -477,41 +607,19 @@ def write_excel(
     # OBSERVACIONES: NEVER modify - must remain exactly as input
     # (removed truncation to preserve original)
     
-    # Sort: PRIORITY DESC, DATA_QUALITY DESC, CONSUMO DESC
-    sort_cols = []
-    if 'PRIORITY' in df_highlight.columns:
-        sort_cols.append('PRIORITY')
-    elif 'PRIORIDAD' in df_highlight.columns:
-        # Use PRIORITY for sorting if available, otherwise skip
-        pass
-    if 'DATA_QUALITY' in df_highlight.columns:
-        sort_cols.append('DATA_QUALITY')
-    if 'CONSUMO' in df_highlight.columns:
-        sort_cols.append('CONSUMO')
-    
-    if sort_cols:
-        df_highlight = df_highlight.sort_values(by=sort_cols, ascending=[False] * len(sort_cols))
-    
     # ============================================
-    # FIX 3: Añadir fila de resumen al inicio de LEADS ENRIQUECIDOS
+    # Preparar resumen para Excel (with_new_data ya calculado arriba)
     # ============================================
-    total_received = len(df_all)
-    red_count = len(red_df_indices)
     analyzed_count = len(df_highlight)
-    # Contar leads con datos nuevos (RESULTADO no es "❌ Sin datos nuevos")
-    if 'RESULTADO' in df_highlight.columns:
-        with_new_data = (df_highlight['RESULTADO'] != '❌ Sin datos nuevos').sum()
-    else:
-        with_new_data = 0
     
     # Calcular descartadas por baja prioridad (total - red - analizadas)
     low_priority_count = total_received - red_count - analyzed_count
     
     summary_text = f"RESUMEN: {total_received} empresas recibidas | {red_count} descartadas (fila roja) | {low_priority_count} descartadas (baja prioridad) | {analyzed_count} analizadas | {with_new_data} con datos nuevos"
+    logger.info(f"Summary: {total_received} received, {red_count} red, {low_priority_count} low priority, {analyzed_count} analyzed, {with_new_data} with new data")
     
-    # NO crear summary_df con concat - lo haremos directamente en Excel después
-    # Esto evita el error de "Reindexing only valid with uniquely valued Index objects"
     # Guardamos el summary_text para usarlo después al formatear Excel
+    # (se insertará directamente en Excel usando openpyxl para evitar problemas con concat)
     
     # ============================================
     # Write Excel with 2 sheets (LEADS ENRIQUECIDOS first, then BBDD ORIGINAL)
@@ -521,8 +629,6 @@ def write_excel(
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         df_highlight.to_excel(writer, sheet_name='LEADS ENRIQUECIDOS', index=False)
         df_original.to_excel(writer, sheet_name='BBDD ORIGINAL', index=False)
-    
-    # summary_text se usa más abajo al formatear Excel
     
     # Now apply formatting
     wb = load_workbook(output_path)
@@ -620,11 +726,11 @@ def write_excel(
     # ============================================
     ws_highlight = wb['LEADS ENRIQUECIDOS']
     
-    # CRÍTICO: Insert summary row at the top (row 1) - esto mueve headers a fila 2
+    # Insert summary row at the top (row 1) - esto mueve headers a fila 2
     from openpyxl.styles import Alignment
     summary_fill = PatternFill(start_color="FFE6E6FA", end_color="FFE6E6FA", fill_type="solid")  # Lavender
     
-    # Insert a new row 1 for summary (esto mueve todo hacia abajo: headers van a fila 2, data a fila 3+)
+    # Insert a new row 1 for summary (moves everything down: headers to row 2, data to row 3+)
     ws_highlight.insert_rows(1)
     
     # Merge cells in row 1 for summary (span all columns)
@@ -636,7 +742,6 @@ def write_excel(
     summary_cell.font = Font(bold=True, size=11)
     summary_cell.alignment = Alignment(horizontal='left', vertical='center')
     
-    # VERIFICAR: Headers deben estar en fila 2 después del insert
     # Make headers bold (row 2, since row 1 is summary) and add background color
     header_fill = PatternFill(start_color="FFD3D3D3", end_color="FFD3D3D3", fill_type="solid")  # Light gray
     header_row = 2  # Headers están en fila 2 después de insertar summary en fila 1

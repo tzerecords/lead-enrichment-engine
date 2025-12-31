@@ -193,6 +193,11 @@ if uploaded_file is not None:
     if file_id != st.session_state.uploaded_file_id:
         st.session_state.uploaded_file_id = file_id
         st.session_state.processing = False
+        # Limpiar resultados anteriores cuando se carga un nuevo archivo
+        st.session_state.processing_result = None
+        st.session_state.processing_output_path = None
+        st.session_state.processing_error = None
+        st.session_state.last_processed_file_name = uploaded_file.name
         
         # Read and validate
         try:
@@ -218,16 +223,36 @@ if uploaded_file is not None:
     else:
         st.info(f"📄 Archivo cargado: **{uploaded_file.name}** ({st.session_state.num_rows} leads)")
 
-# Sección "Cómo funciona?"
+# Sección "Cómo funciona"
 with st.expander("ℹ️ Cómo funciona", expanded=False):
     st.markdown("""
+    **📋 ANTES DE SUBIR TU EXCEL:**
+    
+    ⚠️ **IMPORTANTE**: Limpia tu Excel antes de subirlo. Borra todas las filas que no necesites (duplicados, empresas que ya no te interesan, datos obsoletos, etc.). 
+    
+    Si subes más de 1000 leads, el proceso será muy lento y costoso. Trabaja un poco antes de subir el archivo para obtener mejores resultados.
+    
+    ---
+    
     **¿Qué hace esta herramienta?**
+    
+    La herramienta limpia y enriquece tus leads de forma inteligente:
+    - **Limpia las filas descartadas** (rojas o baja prioridad) para procesar solo lo relevante
+    - Esto hace el proceso **más rápido, más barato y más eficiente**
     - Valida CIFs y corrige datos de empresas
-    - Busca teléfonos actualizados
+    - Busca teléfonos actualizados con Google Places y Tavily
     - Encuentra emails de contacto solo para leads prioritarios (alto consumo energético)
     
+    **¿Por qué limpia filas descartadas?**
+    
+    Al descartar filas rojas y leads de baja prioridad antes de procesar, optimizamos:
+    - ⚡ **Velocidad**: Procesamos menos datos, es más rápido
+    - 💰 **Costo**: Usamos menos llamadas a APIs, es más barato
+    - 🎯 **Calidad**: Nos enfocamos en los leads que realmente importan
+    
     **¿Por qué no busca emails para todos?**
-    Solo buscamos emails para empresas con consumo relevante. 
+    
+    Solo buscamos emails para empresas con consumo relevante (≥70 MWh). 
     Buscar para todos sería lento y costoso sin beneficio real.
     
     **¿Qué significan los colores en el Excel?**
@@ -318,11 +343,7 @@ if st.session_state.processing and uploaded_file is not None:
             # Update progress bar
             progress_bar.progress(progress, text=progress_text)
             
-            # Show spinner for visual feedback
-            with spinner_placeholder:
-                st.spinner("🔄 Procesando...")
-            
-            # Update metrics
+            # Update metrics (spinner removed - progress bar provides visual feedback)
             st.session_state.processed_count = current + 1
             metric_processed.metric("Procesados", f"{current + 1}/{total}")
     
@@ -332,13 +353,12 @@ if st.session_state.processing and uploaded_file is not None:
         return st.session_state.get('stop_requested', False)
     
     try:
-        # Show initial progress with spinner
-        with spinner_placeholder:
-            st.spinner("🔄 Iniciando...")
+        # Show initial progress
         status_text.info("📊 Analizando archivo y calculando prioridades...")
         progress_bar.progress(0.0, text="Iniciando...")
         
         # Process file with default configuration (this will take time)
+        # Note: No usar st.spinner() aquí porque bloquea los callbacks de progress
         df_result, metrics = process_file(
             input_path=tmp_input_path,
             output_path=tmp_output_path,
@@ -385,6 +405,9 @@ if st.session_state.processing and uploaded_file is not None:
             'rows': st.session_state.num_rows,
             'output_path': str(tmp_output_path)
         })
+        
+        # Guardar nombre del archivo procesado para detectar nuevos archivos
+        st.session_state.last_processed_file_name = uploaded_file.name
         
         # Set processing to False
         st.session_state.processing = False
@@ -445,9 +468,8 @@ if not st.session_state.processing and processing_result is not None:
             type="primary"
         )
     
-    # Clear result state after showing
-    st.session_state.processing_result = None
-    st.session_state.processing_output_path = None
+    # NO limpiar result state - mantener UI hasta que se cargue nuevo archivo o se cierre la página
+    # El estado se mantendrá en st.session_state hasta que la sesión termine o se cargue un nuevo archivo
 
 # Display errors
 processing_error = st.session_state.get('processing_error')

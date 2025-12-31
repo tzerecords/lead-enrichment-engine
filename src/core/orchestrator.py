@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, List
+import os
+import re
+import asyncio
 
 import pandas as pd
 
@@ -18,10 +21,6 @@ from src.validators.cif_batch_validator import revalidate_cifs
 from src.core.scoring_engine import ScoringEngine
 from src.utils.logger import setup_logger
 from src.utils.config_loader import load_yaml_config
-import os
-import re
-import asyncio
-from typing import List, Dict, Any
 
 logger = setup_logger()
 
@@ -79,22 +78,22 @@ def run_pipeline(
     records = df_process.to_dict(orient="records")
     total_leads = len(records)
     
-    # Debug: Log BEFORE enrichment
-    logger.info(f"BEFORE Tier1: Sample record keys: {list(records[0].keys()) if records else 'NO RECORDS'}")
+    # Log sample record before enrichment for debugging
     if records:
         sample = records[0]
-        logger.info(f"BEFORE Tier1: CIF/NIF={sample.get('CIF/NIF')}, CIF={sample.get('CIF')}, "
-                   f"TELEFONO 1={sample.get('TELEFONO 1')}, NOMBRE CLIENTE={sample.get('NOMBRE CLIENTE')}")
+        logger.debug(f"BEFORE Tier1: Sample record keys: {list(sample.keys())}")
+        logger.debug(f"BEFORE Tier1: CIF/NIF={sample.get('CIF/NIF')}, CIF={sample.get('CIF')}, "
+                     f"TELEFONO 1={sample.get('TELEFONO 1')}, NOMBRE CLIENTE={sample.get('NOMBRE CLIENTE')}")
     
     # Enrich with progress callback (now passed to enrich_batch)
     batch_report = enricher.enrich_batch(records, progress_callback=progress_callback, check_stop_callback=check_stop_callback)
 
-    # Debug: Log AFTER enrichment
-    logger.info(f"AFTER Tier1: Sample record keys: {list(records[0].keys()) if records else 'NO RECORDS'}")
+    # Log sample record after enrichment for debugging
     if records:
         sample = records[0]
-        logger.info(f"AFTER Tier1: CIF={sample.get('CIF')}, PHONE={sample.get('PHONE')}, "
-                   f"RAZON_SOCIAL={sample.get('RAZON_SOCIAL')}, CIF_VALID={sample.get('CIF_VALID')}")
+        logger.debug(f"AFTER Tier1: Sample record keys: {list(sample.keys())}")
+        logger.debug(f"AFTER Tier1: CIF={sample.get('CIF')}, PHONE={sample.get('PHONE')}, "
+                     f"RAZON_SOCIAL={sample.get('RAZON_SOCIAL')}, CIF_VALID={sample.get('CIF_VALID')}")
 
     # Bring enriched columns back into the main DataFrame
     df_enriched = pd.DataFrame(records)
@@ -756,7 +755,34 @@ def process_file(
         # Calculate metrics
         total_rows = len(df_result)
         high_quality = (df_result["DATA_QUALITY"] == "High").sum() if "DATA_QUALITY" in df_result.columns else 0
-        emails_valid = df_result["EMAIL_VALID"].sum() if "EMAIL_VALID" in df_result.columns else 0
+        
+        # Count valid emails: EMAIL_SPECIFIC or EMAIL_FOUND that are not empty/NO_EMAIL_FOUND/NOT_FOUND
+        emails_valid = 0
+        if "EMAIL_SPECIFIC" in df_result.columns:
+            emails_valid += df_result.apply(
+                lambda row: 1 if (
+                    pd.notna(row.get("EMAIL_SPECIFIC")) and 
+                    str(row.get("EMAIL_SPECIFIC", "")).strip() not in ["", "NO_EMAIL_FOUND", "NOT_FOUND"]
+                ) else 0,
+                axis=1
+            ).sum()
+        if "EMAIL_FOUND" in df_result.columns:
+            # Count EMAIL_FOUND that are valid (not already counted in EMAIL_SPECIFIC)
+            emails_valid += df_result.apply(
+                lambda row: 1 if (
+                    pd.notna(row.get("EMAIL_FOUND")) and 
+                    str(row.get("EMAIL_FOUND", "")).strip() not in ["", "NO_EMAIL_FOUND", "NOT_FOUND"] and
+                    (pd.isna(row.get("EMAIL_SPECIFIC")) or str(row.get("EMAIL_SPECIFIC", "")).strip() in ["", "NO_EMAIL_FOUND", "NOT_FOUND"])
+                ) else 0,
+                axis=1
+            ).sum()
+        
+        # Also count from EMAIL_VALID if exists (for backward compatibility)
+        if "EMAIL_VALID" in df_result.columns:
+            emails_valid_from_valid = df_result["EMAIL_VALID"].sum()
+            # Use the higher count (should be similar but EMAIL_FOUND/EMAIL_SPECIFIC is more accurate)
+            if emails_valid_from_valid > emails_valid:
+                emails_valid = emails_valid_from_valid
 
         metrics = {
             "total_processed": total_rows,
