@@ -502,18 +502,24 @@ def write_excel(
     summary_text = f"RESUMEN: {total_received} empresas recibidas | {red_count} descartadas (fila roja) | {low_priority_count} descartadas (baja prioridad) | {analyzed_count} analizadas | {with_new_data} con datos nuevos"
     
     # Crear DataFrame con resumen como primera fila (merge todas las columnas en la primera)
-    # Use current column names (after renaming)
+    # IMPORTANTE: Usar las columnas RENOMBRADAS (después del rename)
     current_cols = list(df_highlight.columns)
     summary_row = {col: summary_text if col == current_cols[0] else '' for col in current_cols}
     summary_df = pd.DataFrame([summary_row])
+    # Concatenar: summary (fila 1) + headers (fila 2) + data (fila 3+)
+    # Pero pandas to_excel() escribe headers automáticamente, así que:
+    # Fila 1: summary (merged)
+    # Fila 2: headers (automático de pandas)
+    # Fila 3+: data
     df_highlight_with_summary = pd.concat([summary_df, df_highlight], ignore_index=True)
     
     # ============================================
     # Write Excel with 2 sheets (LEADS ENRIQUECIDOS first, then BBDD ORIGINAL)
     # ============================================
-    # First, write all sheets using pandas - ORDER: LEADS ENRIQUECIDOS first
+    # Escribir df_highlight normalmente (headers en fila 1, data en fila 2+)
+    # Luego insertaremos el summary en fila 1 y moveremos todo hacia abajo
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-        df_highlight_with_summary.to_excel(writer, sheet_name='LEADS ENRIQUECIDOS', index=False)
+        df_highlight.to_excel(writer, sheet_name='LEADS ENRIQUECIDOS', index=False)
         df_original.to_excel(writer, sheet_name='BBDD ORIGINAL', index=False)
     
     # Now apply formatting
@@ -612,24 +618,34 @@ def write_excel(
     # ============================================
     ws_highlight = wb['LEADS ENRIQUECIDOS']
     
-    # FIX 3: Format summary row (row 1) - bold, background color, merged cells
+    # CRÍTICO: Insert summary row at the top (row 1) - esto mueve headers a fila 2
     from openpyxl.styles import Alignment
     summary_fill = PatternFill(start_color="FFE6E6FA", end_color="FFE6E6FA", fill_type="solid")  # Lavender
+    
+    # Insert a new row 1 for summary (esto mueve todo hacia abajo: headers van a fila 2, data a fila 3+)
+    ws_highlight.insert_rows(1)
     
     # Merge cells in row 1 for summary (span all columns)
     num_cols = len(list(df_highlight.columns))
     ws_highlight.merge_cells(start_row=1, start_column=1, end_row=1, end_column=num_cols)
     summary_cell = ws_highlight.cell(row=1, column=1)
+    summary_cell.value = summary_text
     summary_cell.fill = summary_fill
     summary_cell.font = Font(bold=True, size=11)
     summary_cell.alignment = Alignment(horizontal='left', vertical='center')
     
+    # VERIFICAR: Headers deben estar en fila 2 después del insert
     # Make headers bold (row 2, since row 1 is summary) and add background color
     header_fill = PatternFill(start_color="FFD3D3D3", end_color="FFD3D3D3", fill_type="solid")  # Light gray
-    for cell in ws_highlight[2]:
-        cell.font = Font(bold=True, size=10)
-        cell.fill = header_fill
-        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    header_row = 2  # Headers están en fila 2 después de insertar summary en fila 1
+    for col_idx in range(1, num_cols + 1):
+        cell = ws_highlight.cell(row=header_row, column=col_idx)
+        if cell.value:  # Solo formatear si tiene valor (es un header)
+            cell.font = Font(bold=True, size=10)
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    
+    logger.info(f"LEADS ENRIQUECIDOS: Summary in row 1, Headers in row 2, Data starts in row 3")
     
     # Auto-adjust widths
     _auto_adjust_column_widths(ws_highlight)
