@@ -479,7 +479,9 @@ def write_excel(
     summary_text = f"RESUMEN: {total_received} empresas recibidas | {red_count} descartadas (fila roja) | {low_priority_count} descartadas (baja prioridad) | {analyzed_count} analizadas | {with_new_data} con datos nuevos"
     
     # Crear DataFrame con resumen como primera fila (merge todas las columnas en la primera)
-    summary_row = {col: summary_text if col == highlight_cols[0] else '' for col in highlight_cols}
+    # Use current column names (after renaming)
+    current_cols = list(df_highlight.columns)
+    summary_row = {col: summary_text if col == current_cols[0] else '' for col in current_cols}
     summary_df = pd.DataFrame([summary_row])
     df_highlight_with_summary = pd.concat([summary_df, df_highlight], ignore_index=True)
     
