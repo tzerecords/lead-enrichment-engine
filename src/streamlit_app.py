@@ -359,8 +359,10 @@ if st.session_state.processing and uploaded_file is not None:
             st.rerun()
         
         # Update final metrics
-        phones_count = metrics.get("phone_found", 0)
-        emails_count = metrics.get("emails_found", 0)
+        phones_count = metrics.get("phone_found", 0) if metrics else 0
+        emails_count = metrics.get("emails_found", 0) if metrics else 0
+        st.session_state.phones_found = phones_count
+        st.session_state.emails_found = emails_count
         metric_phones.metric("Teléfonos encontrados", phones_count)
         metric_emails.metric("Emails encontrados", emails_count)
         

@@ -87,8 +87,8 @@ def run_pipeline(
     # Enrich with progress callback
     batch_report = enricher.enrich_batch(records)
     
-    # Update progress for each lead
-    if progress_callback:
+    # Update progress after enrichment (simplified - actual progress would need to be in enrich_batch)
+    if progress_callback and total_leads > 0:
         for i, record in enumerate(records):
             # Check stop
             if check_stop_callback and check_stop_callback():
@@ -101,7 +101,10 @@ def run_pipeline(
                 str(record.get("RAZON_SOCIAL", "") or "").strip() or
                 ""
             )
-            progress_callback(i, total_leads, company_name)
+            try:
+                progress_callback(i, total_leads, company_name)
+            except Exception as e:
+                logger.warning(f"Progress callback error: {e}")
 
     # Debug: Log AFTER enrichment
     logger.info(f"AFTER Tier1: Sample record keys: {list(records[0].keys()) if records else 'NO RECORDS'}")
@@ -513,6 +516,8 @@ def process_file(
     tiers: list[int] = [1, 3],
     enable_email_research: bool = False,
     force_tier2: bool = False,
+    progress_callback: callable = None,
+    check_stop_callback: callable = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Process Excel file through the full pipeline.
 
