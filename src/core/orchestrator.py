@@ -18,6 +18,10 @@ from src.validators.cif_batch_validator import revalidate_cifs
 from src.core.scoring_engine import ScoringEngine
 from src.utils.logger import setup_logger
 from src.utils.config_loader import load_yaml_config
+import os
+import re
+import asyncio
+from typing import List, Dict, Any
 
 logger = setup_logger()
 
@@ -239,6 +243,183 @@ def run_tier2_enrichment(
     return df_result, tier2_report
 
 
+def run_tavily_complementary_search(
+    df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Run complementary Tavily search for PRIORITY >= 2 leads.
+    
+    For leads with PRIORITY >= 2:
+    1. If Google didn't find phone → Try Tavily for phone
+    2. Always search Tavily for email (Google doesn't provide emails)
+    
+    Uses a single optimized Tavily query per lead.
+    
+    Args:
+        df: DataFrame with PRIORITY, PHONE, PHONE_SOURCE columns.
+        
+    Returns:
+        DataFrame with updated PHONE, PHONE_SOURCE, EMAIL_FOUND, EMAIL_SOURCE columns.
+    """
+    df_result = df.copy()
+    
+    # Initialize Tavily client
+    tavily_key = os.getenv("TAVILY_API_KEY")
+    if not tavily_key:
+        logger.warning("TAVILY_API_KEY not found, skipping complementary Tavily search")
+        return df_result
+    
+    try:
+        from tavily import TavilyClient
+        tavily_client = TavilyClient(api_key=tavily_key)
+    except Exception as e:
+        logger.warning(f"Could not initialize Tavily client: {e}")
+        return df_result
+    
+    # Filter to PRIORITY >= 2 leads
+    priority_mask = (df_result.get("PRIORITY", pd.Series(0, index=df_result.index)).fillna(0) >= 2)
+    red_mask = (df_result.get("_IS_RED_ROW", pd.Series(False, index=df_result.index)) == False)
+    mask_priority = priority_mask & red_mask
+    
+    df_priority = df_result.loc[mask_priority].copy()
+    
+    if len(df_priority) == 0:
+        logger.info("No leads with PRIORITY >= 2, skipping complementary Tavily search")
+        return df_result
+    
+    logger.info(f"Running complementary Tavily search for {len(df_priority)} PRIORITY >= 2 leads")
+    
+    # Initialize columns if they don't exist
+    if "EMAIL_FOUND" not in df_result.columns:
+        df_result["EMAIL_FOUND"] = None
+    if "EMAIL_SOURCE" not in df_result.columns:
+        df_result["EMAIL_SOURCE"] = None
+    
+    # Prepare leads for batch processing
+    leads_to_process = []
+    for idx, row in df_priority.iterrows():
+        company_name = (
+            str(row.get("NOMBRE CLIENTE", "") or "").strip() or
+            str(row.get("NOMBRE_CLIENTE", "") or "").strip() or
+            str(row.get("RAZON_SOCIAL", "") or "").strip() or
+            str(row.get("NOMBRE_EMPRESA", "") or "").strip() or
+            ""
+        )
+        
+        if not company_name:
+            continue
+        
+        # Check if we need phone (Google didn't find it)
+        phone = row.get("PHONE")
+        phone_source = str(row.get("PHONE_SOURCE", "") or "").strip()
+        needs_phone = (pd.isna(phone) or not phone or phone_source in ["NOT_FOUND", "error", ""])
+        
+        # Always search for email for PRIORITY >= 2
+        needs_email = True
+        
+        if not needs_phone and not needs_email:
+            continue
+        
+        leads_to_process.append({
+            "idx": idx,
+            "company_name": company_name,
+            "needs_phone": needs_phone,
+            "needs_email": needs_email
+        })
+    
+    # Process in parallel batches of 5-10
+    async def search_tavily_async(lead_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Async Tavily search for a single lead."""
+        idx = lead_info["idx"]
+        company_name = lead_info["company_name"]
+        needs_phone = lead_info["needs_phone"]
+        needs_email = lead_info["needs_email"]
+        
+        result = {"idx": idx, "phone": None, "email": None}
+        
+        try:
+            # Optimized query: search for both phone and email in one call
+            query = f'"{company_name}" email contacto site:.es OR site:.com'
+            if needs_phone:
+                query += " teléfono"
+            
+            # Tavily client is synchronous, so we run it in executor
+            loop = asyncio.get_event_loop()
+            tavily_response = await loop.run_in_executor(
+                None, 
+                lambda: tavily_client.search(query, max_results=3)
+            )
+            
+            if tavily_response.get("results"):
+                content_combined = " ".join([r.get("content", "") for r in tavily_response.get("results", [])])
+                
+                # Extract phone if needed
+                if needs_phone:
+                    phone_pattern = r'(?:\+34|34)?[\s.-]?([6-9]\d{8})'
+                    matches = re.findall(phone_pattern, content_combined)
+                    if matches:
+                        phone_digits = matches[0].replace(" ", "").replace(".", "").replace("-", "").strip()
+                        if len(phone_digits) == 9:
+                            result["phone"] = f"+34{phone_digits}"
+                
+                # Extract email
+                if needs_email:
+                    email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+                    email_matches = re.findall(email_pattern, content_combined)
+                    if email_matches:
+                        # Filter emails that look like company emails (not generic)
+                        valid_emails = [e for e in email_matches if not any(x in e.lower() for x in ['example', 'test', 'noreply', 'no-reply'])]
+                        if valid_emails:
+                            # Prefer emails with company domain
+                            company_domain = company_name.lower().replace(" ", "").replace(".", "")[:10]
+                            preferred_email = None
+                            for email in valid_emails:
+                                if company_domain in email.lower():
+                                    preferred_email = email
+                                    break
+                            
+                            result["email"] = preferred_email or valid_emails[0]
+        
+        except Exception as e:
+            logger.warning(f"Tavily complementary search failed for {company_name}: {e}")
+        
+        return result
+    
+    async def process_batch(leads_batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Process a batch of leads in parallel."""
+        tasks = [search_tavily_async(lead) for lead in leads_batch]
+        return await asyncio.gather(*tasks)
+    
+    # Process in batches of 8 (good balance between speed and rate limits)
+    batch_size = 8
+    all_results = []
+    
+    for i in range(0, len(leads_to_process), batch_size):
+        batch = leads_to_process[i:i + batch_size]
+        logger.info(f"Processing Tavily batch {i//batch_size + 1}/{(len(leads_to_process) + batch_size - 1)//batch_size} ({len(batch)} leads)")
+        
+        try:
+            batch_results = asyncio.run(process_batch(batch))
+            all_results.extend(batch_results)
+        except Exception as e:
+            logger.error(f"Error processing Tavily batch: {e}")
+            continue
+    
+    # Update DataFrame with results
+    for result in all_results:
+        idx = result["idx"]
+        if result.get("phone"):
+            df_result.loc[idx, "PHONE"] = result["phone"]
+            df_result.loc[idx, "PHONE_SOURCE"] = "tavily"
+            logger.debug(f"Found phone via Tavily: {result['phone']}")
+        if result.get("email"):
+            df_result.loc[idx, "EMAIL_FOUND"] = result["email"]
+            df_result.loc[idx, "EMAIL_SOURCE"] = "tavily"
+            logger.debug(f"Found email via Tavily: {result['email']}")
+    
+    logger.info("✅ Complementary Tavily search completed")
+    return df_result
+
+
 def run_tier3_and_validation(
     df: pd.DataFrame,
     enable_tier3: bool = True,
@@ -355,6 +536,11 @@ def process_file(
             df_result.loc[mask_process, "PRIORITY"] = priorities.values
             batch_report = None
 
+        # Run complementary Tavily search for PRIORITY >= 2 (after Tier1, before Tier2)
+        # This searches for phone (if Google didn't find it) and email (always for PRIORITY >= 2)
+        logger.info("Running complementary Tavily search for PRIORITY >= 2 leads...")
+        df_result = run_tavily_complementary_search(df_result)
+        
         # Run Tier2 if requested
         tier2_report = None
         if 2 in tiers:

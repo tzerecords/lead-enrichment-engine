@@ -60,7 +60,7 @@ def get_rate_limit_status():
             with open(rate_limit_file, 'r') as f:
                 data = json.load(f)
                 google_used = data.get("google_places", {}).get("used", 0)
-                google_limit = data.get("google_places", {}).get("limit", 1000)
+                google_limit = data.get("google_places", {}).get("limit", 10000)
                 return google_used, google_limit
         except Exception:
             return 0, 1000
@@ -77,14 +77,14 @@ def get_api_status_text() -> str:
         try:
             from src.utils.config_loader import load_yaml_config
             tier1_config = load_yaml_config("config/tier1_config.yaml")
-            google_limit = tier1_config.get("tier1", {}).get("rate_limits", {}).get("google_places", 1000)
-            DAILY_LIMITS = {"google_places": google_limit, "tavily": 1000}
+            google_limit = tier1_config.get("tier1", {}).get("rate_limits", {}).get("google_places", 10000)
+            DAILY_LIMITS = {"google_places": google_limit, "tavily": 10000}
         except Exception:
-            DAILY_LIMITS = {"google_places": 1000, "tavily": 1000}
+            DAILY_LIMITS = {"google_places": 10000, "tavily": 10000}
     
     # Get used counts
     google_used, google_limit_file = get_rate_limit_status()
-    google_limit = DAILY_LIMITS.get("google_places", 1000)
+    google_limit = DAILY_LIMITS.get("google_places", 10000)
     
     # Check API keys
     keys = check_api_keys()
@@ -240,6 +240,16 @@ if st.session_state.processing and uploaded_file is not None:
     # Progress bar with animation
     progress_bar = st.progress(0)
     status_text = st.empty()
+    lead_text = st.empty()
+    
+    # STOP button
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        if st.button("⏹️ DETENER", type="secondary", use_container_width=True):
+            st.session_state.stop_processing = True
+            st.session_state.processing = False
+            st.warning("⏸️ Procesamiento detenido por el usuario")
+            st.rerun()
     
     # Create temporary files
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp_input:
@@ -249,16 +259,18 @@ if st.session_state.processing and uploaded_file is not None:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp_output:
         tmp_output_path = Path(tmp_output.name)
     
-    # Clear previous results
+    # Clear previous results and reset stop flag
     st.session_state.processing_result = None
     st.session_state.processing_error = None
     st.session_state.processing_output_path = None
+    st.session_state.stop_processing = False
     
     try:
         # Show initial progress with spinner for visual feedback
         with st.spinner("🔄 Procesando archivo..."):
             status_text.info("📊 Analizando archivo y calculando prioridades...")
             progress_bar.progress(0.1)
+            lead_text.text("Iniciando procesamiento...")
             
             # Process file with default configuration (this will take time)
             df_result, metrics = process_file(
@@ -268,10 +280,17 @@ if st.session_state.processing and uploaded_file is not None:
                 enable_email_research=True,  # Siempre activo para Tier2
                 force_tier2=False  # Nunca forzar
             )
+            
+            # Check if stopped
+            if st.session_state.stop_processing:
+                st.warning("⏸️ Procesamiento detenido")
+                st.session_state.processing = False
+                st.rerun()
         
         # Final progress
         progress_bar.progress(1.0)
         status_text.success("✅ Procesamiento completado!")
+        lead_text.empty()
         
         # Store results
         st.session_state.processing_result = {

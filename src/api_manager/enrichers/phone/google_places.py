@@ -15,7 +15,7 @@ class GooglePlacesEnricher:
 
     Uses the new Places API (places.googleapis.com) directly via HTTP requests.
     Provides phone number, company name (razón social), and address.
-    Uses daily rate limit of 1000 requests (configurable).
+    Uses daily rate limit of 10000 requests (configurable).
     """
 
     source_name = "google_places"
@@ -25,7 +25,7 @@ class GooglePlacesEnricher:
         self,
         api_key: str,
         rate_limiter: Optional[RateLimiter] = None,
-        daily_limit: int = 1000,
+        daily_limit: int = 10000,
     ) -> None:
         self.api_key = api_key
         self.logger = get_logger("tier1.google_places")
@@ -260,7 +260,7 @@ def load_google_places_from_config(config_path: str) -> GooglePlacesEnricher:
     tier1 = cfg.get("tier1", {})
     rate_limits = tier1.get("rate_limits", {})
 
-    daily_limit = int(rate_limits.get("google_places", 1000))
+    daily_limit = int(rate_limits.get("google_places", 10000))
     # Support both old format (google_maps.api_key) and new format (google_places_key)
     api_key = (
         api_keys.get("google_places_key")

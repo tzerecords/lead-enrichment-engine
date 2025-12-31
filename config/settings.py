@@ -2,6 +2,6 @@
 
 # Daily rate limits for APIs
 DAILY_LIMITS = {
-    "google_places": 1000,
-    "tavily": 1000
+    "google_places": 10000,
+    "tavily": 10000
 }

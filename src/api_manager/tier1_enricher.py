@@ -40,7 +40,7 @@ class Tier1Enricher:
             or ""
         )
 
-        google_places_limit = int(rate_limits.get("google_places", 1000))
+        google_places_limit = int(rate_limits.get("google_places", 10000))
 
         # CIF validators (primary: regex_local, fallback: borme)
         self.cif_primary = RegexCIFValidator()
@@ -149,14 +149,19 @@ class Tier1Enricher:
                         
                         if tavily_response.get("results"):
                             # Extract phone from Tavily results using regex
-                            phone_pattern = r'(\+?34\s?[6-9]\d{8}|\d{9})'
+                            # Pattern: optional +34/34, optional separator, then 9 digits starting with 6-9
+                            phone_pattern = r'(?:\+34|34)?[\s.-]?([6-9]\d{8})'
                             for result in tavily_response.get("results", []):
                                 content = result.get("content", "")
                                 matches = re.findall(phone_pattern, content)
                                 if matches:
-                                    phone = matches[0].replace(" ", "").replace("+34", "").strip()
-                                    if len(phone) == 9:
-                                        phone = f"+34{phone}"
+                                    # Extract the 9-digit number (group 1)
+                                    phone_digits = matches[0].replace(" ", "").replace(".", "").replace("-", "").strip()
+                                    # Always format as +34XXXXXXXXX
+                                    if len(phone_digits) == 9:
+                                        phone = f"+34{phone_digits}"
+                                    else:
+                                        continue  # Skip invalid phone numbers
                                     phone_result = PhoneResult(
                                         phone=phone,
                                         confidence=0.7,
