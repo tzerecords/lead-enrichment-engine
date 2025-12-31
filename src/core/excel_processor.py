@@ -389,14 +389,16 @@ def write_excel(
     else:
         df_highlight['🏢 RAZON_SOCIAL_NUEVA'] = ''
     
-    # RESULTADO: resumen de qué se encontró
+    # RESULTADO: resumen de qué se encontró (usar columnas renombradas)
     def get_resultado(row):
         found = []
         if pd.notna(row.get('📞 TEL_NUEVO')) and str(row.get('📞 TEL_NUEVO', '')).strip():
             found.append('✅ Tel nuevo')
         if pd.notna(row.get('📧 EMAIL_NUEVO')) and str(row.get('📧 EMAIL_NUEVO', '')).strip():
             found.append('✅ Email')
-        if pd.notna(row.get('🏢 RAZON_SOCIAL_NUEVA')) and str(row.get('🏢 RAZON_SOCIAL_NUEVA', '')).strip():
+        # Usar la columna renombrada si existe, sino la original
+        razon_col = '🏢 RAZÓN SOCIAL' if '🏢 RAZÓN SOCIAL' in row.index else '🏢 RAZON_SOCIAL_NUEVA'
+        if pd.notna(row.get(razon_col)) and str(row.get(razon_col, '')).strip():
             found.append('✅ Razón social')
         return ' | '.join(found) if found else '❌ Sin datos nuevos'
     
@@ -453,11 +455,6 @@ def write_excel(
         df_highlight = df_highlight.sort_values(by=sort_cols, ascending=[False] * len(sort_cols))
     
     # ============================================
-    # HOJA 3: "DATOS_TÉCNICOS" - Todas las columnas (incluye filas rojas)
-    # ============================================
-    df_technical = df_all.copy()
-    
-    # ============================================
     # FIX 3: Añadir fila de resumen al inicio de LEADS ENRIQUECIDOS
     # ============================================
     total_received = len(df_all)
@@ -480,13 +477,12 @@ def write_excel(
     df_highlight_with_summary = pd.concat([summary_df, df_highlight], ignore_index=True)
     
     # ============================================
-    # Write Excel with 3 sheets
+    # Write Excel with 2 sheets (LEADS ENRIQUECIDOS first, then BBDD ORIGINAL)
     # ============================================
-    # First, write all sheets using pandas
+    # First, write all sheets using pandas - ORDER: LEADS ENRIQUECIDOS first
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-        df_original.to_excel(writer, sheet_name='BBDD ORIGINAL', index=False)
         df_highlight_with_summary.to_excel(writer, sheet_name='LEADS ENRIQUECIDOS', index=False)
-        df_technical.to_excel(writer, sheet_name='DATOS_TÉCNICOS', index=False)
+        df_original.to_excel(writer, sheet_name='BBDD ORIGINAL', index=False)
     
     # Now apply formatting
     wb = load_workbook(output_path)
@@ -602,15 +598,9 @@ def write_excel(
     # Auto-adjust widths
     _auto_adjust_column_widths(ws_highlight)
     
-    # ============================================
-    # Format HOJA 3: Auto-adjust widths only
-    # ============================================
-    ws_technical = wb['DATOS_TÉCNICOS']
-    _auto_adjust_column_widths(ws_technical)
-    
-    # Save workbook
+    # Save workbook (only 2 sheets now: LEADS ENRIQUECIDOS and BBDD ORIGINAL)
     wb.save(output_path)
     wb.close()
     
-    logger.info(f"Excel file written with 3 sheets: {output_path}")
+    logger.info(f"Excel file written with 2 sheets (LEADS ENRIQUECIDOS, BBDD ORIGINAL): {output_path}")
 

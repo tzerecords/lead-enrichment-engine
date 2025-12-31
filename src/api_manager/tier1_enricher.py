@@ -248,7 +248,7 @@ class Tier1Enricher:
 
         return enriched
 
-    def enrich_batch(self, leads: List[Dict[str, Any]]) -> BatchReport:
+    def enrich_batch(self, leads: List[Dict[str, Any]], progress_callback: callable = None, check_stop_callback: callable = None) -> BatchReport:
         """Enrich a batch of leads in place and return aggregate stats."""
 
         try:
@@ -263,6 +263,11 @@ class Tier1Enricher:
         errors: List[str] = []
 
         for idx, lead in enumerate(iterator):
+            # Check stop callback
+            if check_stop_callback and check_stop_callback():
+                self.logger.info("Stop requested by user during enrich_batch")
+                raise KeyboardInterrupt("Processing stopped by user")
+            
             enriched = self.enrich_lead(lead)
             leads[idx] = enriched
             if enriched.get("CIF_VALID"):
@@ -271,6 +276,19 @@ class Tier1Enricher:
                 phone_found += 1
             if enriched.get("ERRORS"):
                 errors.append(enriched["ERRORS"])
+            
+            # Update progress
+            if progress_callback:
+                company_name = (
+                    str(lead.get("NOMBRE CLIENTE", "") or "").strip() or
+                    str(lead.get("NOMBRE_CLIENTE", "") or "").strip() or
+                    str(lead.get("RAZON_SOCIAL", "") or "").strip() or
+                    ""
+                )
+                try:
+                    progress_callback(idx, total, company_name)
+                except Exception as e:
+                    self.logger.warning(f"Progress callback error: {e}")
 
         return BatchReport(
             total=total,

@@ -254,8 +254,8 @@ def request_stop():
     st.session_state.stop_requested = True
     st.session_state.processing = False
 
-# Botón PROCESAR - único y grande
-if uploaded_file is not None and not st.session_state.processing:
+# Botón PROCESAR - único y grande (solo si no hay resultado y no está procesando)
+if uploaded_file is not None and not st.session_state.processing and not st.session_state.processing_result:
     if st.button("🚀 PROCESAR", type="primary", use_container_width=True):
         st.session_state.processing = True
         st.session_state.stop_requested = False
@@ -265,9 +265,13 @@ if uploaded_file is not None and not st.session_state.processing:
 if st.session_state.processing and uploaded_file is not None:
     st.subheader("⚙️ Procesando...")
     
-    # Progress bar with text
-    progress_bar = st.progress(0.0, text="Iniciando...")
-    status_text = st.empty()
+    # Progress bar with text and spinner for visual feedback
+    progress_container = st.container()
+    with progress_container:
+        progress_bar = st.progress(0.0, text="Iniciando...")
+        status_text = st.empty()
+        # Spinner for visual animation
+        spinner_placeholder = st.empty()
     
     # Metrics columns
     col1, col2, col3 = st.columns(3)
@@ -281,7 +285,9 @@ if st.session_state.processing and uploaded_file is not None:
     # STOP button centered
     _, col_btn, _ = st.columns([2, 1, 2])
     with col_btn:
-        st.button("⏹️ DETENER", on_click=request_stop, type="secondary", use_container_width=True)
+        if st.button("⏹️ DETENER", on_click=request_stop, type="secondary", use_container_width=True):
+            st.warning("⏸️ Deteniendo procesamiento...")
+            st.rerun()
     
     # Create temporary files
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp_input:
@@ -308,7 +314,13 @@ if st.session_state.processing and uploaded_file is not None:
             progress_text = f"Lead {current + 1}/{total}"
             if company_name:
                 progress_text += f" - {company_name[:40]}"
+            
+            # Update progress bar
             progress_bar.progress(progress, text=progress_text)
+            
+            # Show spinner for visual feedback
+            with spinner_placeholder:
+                st.spinner("🔄 Procesando...")
             
             # Update metrics
             st.session_state.processed_count = current + 1
@@ -320,7 +332,9 @@ if st.session_state.processing and uploaded_file is not None:
         return st.session_state.get('stop_requested', False)
     
     try:
-        # Show initial progress
+        # Show initial progress with spinner
+        with spinner_placeholder:
+            st.spinner("🔄 Iniciando...")
         status_text.info("📊 Analizando archivo y calculando prioridades...")
         progress_bar.progress(0.0, text="Iniciando...")
         
@@ -339,6 +353,7 @@ if st.session_state.processing and uploaded_file is not None:
         if st.session_state.stop_requested:
             st.warning("⏸️ Procesamiento detenido por el usuario")
             st.session_state.processing = False
+            spinner_placeholder.empty()
             st.rerun()
         
         # Update final metrics
@@ -350,6 +365,7 @@ if st.session_state.processing and uploaded_file is not None:
         metric_emails.metric("Emails encontrados", emails_count)
         
         # Final progress
+        spinner_placeholder.empty()
         progress_bar.progress(1.0, text="✅ Completado!")
         status_text.success("✅ Procesamiento completado!")
         

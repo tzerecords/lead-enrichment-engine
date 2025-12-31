@@ -86,27 +86,8 @@ def run_pipeline(
         logger.info(f"BEFORE Tier1: CIF/NIF={sample.get('CIF/NIF')}, CIF={sample.get('CIF')}, "
                    f"TELEFONO 1={sample.get('TELEFONO 1')}, NOMBRE CLIENTE={sample.get('NOMBRE CLIENTE')}")
     
-    # Enrich with progress callback
-    batch_report = enricher.enrich_batch(records)
-    
-    # Update progress after enrichment (simplified - actual progress would need to be in enrich_batch)
-    if progress_callback and total_leads > 0:
-        for i, record in enumerate(records):
-            # Check stop
-            if check_stop_callback and check_stop_callback():
-                logger.info("Stop requested by user during Tier1 enrichment")
-                raise KeyboardInterrupt("Processing stopped by user")
-            
-            company_name = (
-                str(record.get("NOMBRE CLIENTE", "") or "").strip() or
-                str(record.get("NOMBRE_CLIENTE", "") or "").strip() or
-                str(record.get("RAZON_SOCIAL", "") or "").strip() or
-                ""
-            )
-            try:
-                progress_callback(i, total_leads, company_name)
-            except Exception as e:
-                logger.warning(f"Progress callback error: {e}")
+    # Enrich with progress callback (now passed to enrich_batch)
+    batch_report = enricher.enrich_batch(records, progress_callback=progress_callback, check_stop_callback=check_stop_callback)
 
     # Debug: Log AFTER enrichment
     logger.info(f"AFTER Tier1: Sample record keys: {list(records[0].keys()) if records else 'NO RECORDS'}")
@@ -361,49 +342,61 @@ def run_tavily_complementary_search(
         
         try:
             # Optimized query: search for both phone and email in one call
-            query = f'"{company_name}" email contacto site:.es OR site:.com'
-            if needs_phone:
-                query += " teléfono"
+            # Improved query to be more specific
+            query = f'"{company_name}" contacto email teléfono España'
             
             # Tavily client is synchronous, so we run it in executor
             loop = asyncio.get_event_loop()
             tavily_response = await loop.run_in_executor(
                 None, 
-                lambda: tavily_client.search(query, max_results=3)
+                lambda: tavily_client.search(query, max_results=5, search_depth="advanced")
             )
             
+            logger.debug(f"Tavily search for {company_name}: {len(tavily_response.get('results', []))} results")
+            
             if tavily_response.get("results"):
-                content_combined = " ".join([r.get("content", "") for r in tavily_response.get("results", [])])
+                content_combined = " ".join([r.get("content", "") or "" for r in tavily_response.get("results", [])])
+                urls_combined = " ".join([r.get("url", "") or "" for r in tavily_response.get("results", [])])
+                all_text = content_combined + " " + urls_combined
+                
+                logger.debug(f"Tavily content length for {company_name}: {len(all_text)} chars")
                 
                 # Extract phone if needed
                 if needs_phone:
                     phone_pattern = r'(?:\+34|34)?[\s.-]?([6-9]\d{8})'
-                    matches = re.findall(phone_pattern, content_combined)
+                    matches = re.findall(phone_pattern, all_text)
                     if matches:
                         phone_digits = matches[0].replace(" ", "").replace(".", "").replace("-", "").strip()
                         if len(phone_digits) == 9:
                             result["phone"] = f"+34{phone_digits}"
+                            logger.info(f"Tavily found phone for {company_name}: {result['phone']}")
                 
                 # Extract email
                 if needs_email:
                     email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-                    email_matches = re.findall(email_pattern, content_combined)
+                    email_matches = re.findall(email_pattern, all_text)
                     if email_matches:
                         # Filter emails that look like company emails (not generic)
-                        valid_emails = [e for e in email_matches if not any(x in e.lower() for x in ['example', 'test', 'noreply', 'no-reply'])]
+                        valid_emails = [e for e in email_matches if not any(x in e.lower() for x in ['example', 'test', 'noreply', 'no-reply', 'info@', 'contact@', 'hello@'])]
                         if valid_emails:
                             # Prefer emails with company domain
-                            company_domain = company_name.lower().replace(" ", "").replace(".", "")[:10]
+                            company_domain = company_name.lower().replace(" ", "").replace(".", "").replace(",", "")[:15]
                             preferred_email = None
                             for email in valid_emails:
-                                if company_domain in email.lower():
+                                email_domain = email.split('@')[1].split('.')[0] if '@' in email else ""
+                                if company_domain in email_domain or any(word in email_domain for word in company_name.lower().split()[:2] if len(word) > 3):
                                     preferred_email = email
                                     break
                             
                             result["email"] = preferred_email or valid_emails[0]
+                            logger.info(f"Tavily found email for {company_name}: {result['email']}")
+                    else:
+                        logger.debug(f"No email matches found in Tavily results for {company_name}")
+            else:
+                logger.debug(f"Tavily returned no results for {company_name}")
         
         except Exception as e:
-            logger.warning(f"Tavily complementary search failed for {company_name}: {e}")
+            logger.warning(f"Tavily complementary search failed for {company_name}: {e}", exc_info=True)
         
         return result
     
@@ -423,6 +416,11 @@ def run_tavily_complementary_search(
         try:
             batch_results = asyncio.run(process_batch(batch))
             all_results.extend(batch_results)
+            
+            # Log results for debugging
+            phones_found = sum(1 for r in batch_results if r.get("phone"))
+            emails_found = sum(1 for r in batch_results if r.get("email"))
+            logger.info(f"Tavily batch {i//batch_size + 1}: {phones_found} phones, {emails_found} emails found")
         except Exception as e:
             logger.error(f"Error processing Tavily batch: {e}")
             continue
