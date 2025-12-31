@@ -41,6 +41,12 @@ if 'processing_error' not in st.session_state:
     st.session_state.processing_error = None
 if 'processed_files' not in st.session_state:
     st.session_state.processed_files = []
+if 'stop_processing' not in st.session_state:
+    st.session_state.stop_processing = False
+if 'current_lead' not in st.session_state:
+    st.session_state.current_lead = ""
+if 'current_progress' not in st.session_state:
+    st.session_state.current_progress = 0.0
 
 
 def check_api_keys():
@@ -63,8 +69,8 @@ def get_rate_limit_status():
                 google_limit = data.get("google_places", {}).get("limit", 10000)
                 return google_used, google_limit
         except Exception:
-            return 0, 1000
-    return 0, 1000
+            return 0, 10000
+    return 0, 10000
 
 
 def get_api_status_text() -> str:
