@@ -487,19 +487,14 @@ def process_file(
             for idx in df_processed.index:
                 df_result.loc[idx, "TIER3_STATUS"] = "SKIPPED"
 
-        # Clean up PHONE_SOURCE: replace "web_scraper" (garbage) with proper values
+        # Ensure PHONE_SOURCE is properly set (should never be "web_scraper" now)
         if "PHONE_SOURCE" in df_result.columns:
-            mask_web_scraper = df_result["PHONE_SOURCE"] == "web_scraper"
-            # If phone exists but source is web_scraper, mark as original or NOT_SEARCHED
-            for idx in df_result[mask_web_scraper].index:
-                phone = df_result.loc[idx, "PHONE"]
-                if pd.notna(phone) and str(phone).strip():
-                    # Phone exists but source is garbage - mark as original
-                    df_result.loc[idx, "PHONE_SOURCE"] = "original"
-                else:
-                    # No phone and source is garbage - mark as NOT_SEARCHED
-                    df_result.loc[idx, "PHONE_SOURCE"] = "NOT_SEARCHED"
-            logger.info(f"Cleaned {mask_web_scraper.sum()} PHONE_SOURCE entries from 'web_scraper'")
+            mask_missing_source = df_result["PHONE_SOURCE"].isna() | (df_result["PHONE_SOURCE"] == "")
+            mask_no_phone = df_result["PHONE"].isna() | (df_result["PHONE"] == "")
+            mask_needs_fix = mask_missing_source & mask_no_phone
+            if mask_needs_fix.any():
+                df_result.loc[mask_needs_fix, "PHONE_SOURCE"] = "NOT_FOUND"
+                logger.info(f"Set {mask_needs_fix.sum()} rows with missing PHONE_SOURCE to 'NOT_FOUND'")
 
         # Write output Excel
         logger.info(f"Writing output to: {output_path}")

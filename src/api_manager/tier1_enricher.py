@@ -9,7 +9,6 @@ from .validators.cif.borme_validator import BORMECIFValidator
 from .validators.cif.regex_validator import RegexCIFValidator
 from .validators.phone.libphone_validator import LibPhoneValidator
 from .enrichers.phone.google_places import GooglePlacesEnricher
-from .enrichers.phone.web_scraper import WebScraperPhoneFinder
 from src.utils.config_loader import load_yaml_config
 import os
 import re
@@ -52,7 +51,6 @@ class Tier1Enricher:
             api_key=google_places_key,
             daily_limit=google_places_limit,
         )
-        self.phone_finder_fallback = WebScraperPhoneFinder()
         self.phone_validator = LibPhoneValidator(region="ES")
         
         # Tavily client for fallback (optional)
@@ -171,12 +169,13 @@ class Tier1Enricher:
                     except Exception as tavily_exc:
                         self.logger.warning(f"Tavily fallback failed: {tavily_exc}")
                 
-                # Fallback 2: Try web scraper if Tavily didn't work or wasn't available
+                # If no phone found after Google and Tavily, mark as NOT_FOUND
                 if phone_result is None or not phone_result.phone:
-                    phone_result = self.phone_finder_fallback.find(
-                        company_name=company_name or razon_social or "",
-                        address=city,
-                        website=website,
+                    phone_result = PhoneResult(
+                        phone=None,
+                        confidence=0.0,
+                        source="NOT_FOUND",
+                        extra={"error": "No phone found via Google Places or Tavily"}
                     )
             else:
                 # Use Google Places data
