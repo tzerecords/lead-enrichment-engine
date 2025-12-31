@@ -205,25 +205,11 @@ if uploaded_file is not None:
             st.session_state.num_rows = num_rows
             st.session_state.total_leads = num_rows
             
-            # Calculate priority and red row counts
-            from src.core.excel_processor import read_excel
-            from src.core.priority_engine import PriorityEngine
-            
-            df_full, metadata = read_excel(Path(tmp_path))
-            red_count = len(metadata.get("red_df_indices", []))
-            
-            # Calculate priorities for non-red rows
-            mask_process = ~df_full.get("_IS_RED_ROW", False)
-            df_process = df_full[mask_process].copy()
-            priority_engine = PriorityEngine()
-            priorities = priority_engine.calculate_priorities(df_process)
-            priority_count = (priorities >= 2).sum()
-            
             # Cleanup temp file
             os.unlink(tmp_path)
             
             st.success(f"✅ Archivo cargado: **{uploaded_file.name}**")
-            st.info(f"📊 {num_rows} empresas encontradas ({priority_count} prioritarias, {red_count} ignoradas)")
+            st.info(f"📊 {num_rows} empresas encontradas")
             
         except Exception as e:
             st.error(f"❌ Error al leer el archivo: {str(e)}")

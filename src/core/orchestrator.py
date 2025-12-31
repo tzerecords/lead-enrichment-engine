@@ -30,6 +30,8 @@ def run_pipeline(
     df: pd.DataFrame,
     tier1_only: bool = False,
     config_path: str = "config/tier1_config.yaml",
+    progress_callback: callable = None,
+    check_stop_callback: callable = None,
 ) -> Tuple[pd.DataFrame, BatchReport]:
     """Run full pipeline: priority + Tier1 enrichment.
 
@@ -546,6 +548,8 @@ def process_file(
                 df=df,
                 tier1_only=False,
                 config_path="config/tier1_config.yaml",
+                progress_callback=progress_callback,
+                check_stop_callback=check_stop_callback,
             )
         else:
             # Just calculate priorities if Tier1 is skipped
