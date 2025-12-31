@@ -345,6 +345,23 @@ def write_excel(
             ) else '',
             axis=1
         )
+        
+        # FIX 1: Formatear TEL_NUEVO como string para evitar notación científica
+        def format_phone(phone):
+            if pd.isna(phone) or phone == '':
+                return ''
+            phone_str = str(phone).strip()
+            # Remover +34 si existe
+            if phone_str.startswith('+34'):
+                phone_str = phone_str[3:].strip()
+            elif phone_str.startswith('34'):
+                phone_str = phone_str[2:].strip()
+            # Asegurar que es string y formatear
+            if len(phone_str) == 9:
+                return f"+34 {phone_str[0:3]} {phone_str[3:6]} {phone_str[6:]}"
+            return phone_str
+        
+        df_highlight['📞 TEL_NUEVO'] = df_highlight['📞 TEL_NUEVO'].apply(format_phone)
     else:
         df_highlight['📞 TEL_NUEVO'] = ''
     
@@ -385,36 +402,48 @@ def write_excel(
     
     df_highlight['RESULTADO'] = df_highlight.apply(get_resultado, axis=1)
     
-    # Select highlight columns - SIMPLE and CLEAR
-    # Try multiple column name variations
-    highlight_cols = [
-        "NOMBRE CLIENTE",
-        "CIF/NIF",  # Try this first
-        "CIF_NIF",  # Fallback
-        "CIF",      # Another fallback
-        "CONSUMO",
-        "PRIORITY",
-        "📞 TEL_NUEVO",
-        "📧 EMAIL_NUEVO",
-        "🏢 RAZON_SOCIAL_NUEVA",
-        "TELEFONO 1",
-        "MAIL ",
-        "DIRECCIÓN CLIENTE",
-        "POBLACIÓN CLIENTE",
-        "RESULTADO"
-    ]
+    # FIX 2: Reorganizar columnas con estructura clara
+    # Renombrar PRIORITY a PRIORIDAD con valores explicados
+    if 'PRIORITY' in df_highlight.columns:
+        df_highlight['PRIORIDAD'] = df_highlight['PRIORITY'].apply(
+            lambda x: f"Alta ({int(x)})" if pd.notna(x) and x >= 3 else (f"Media ({int(x)})" if pd.notna(x) and x >= 2 else f"Baja ({int(x)})" if pd.notna(x) else "")
+        )
     
-    # Remove duplicates and non-existent columns
-    available_highlight_cols = []
-    seen = set()
-    for col in highlight_cols:
-        if col in df_highlight.columns and col not in seen:
-            available_highlight_cols.append(col)
-            seen.add(col)
+    # Renombrar RAZON_SOCIAL_NUEVA
+    if '🏢 RAZON_SOCIAL_NUEVA' in df_highlight.columns:
+        df_highlight['🏢 RAZÓN SOCIAL'] = df_highlight['🏢 RAZON_SOCIAL_NUEVA']
     
-    # Use available columns (only include columns that exist)
-    available_highlight_cols = [col for col in highlight_cols if col in df_highlight.columns]
-    df_highlight = df_highlight[available_highlight_cols].copy()
+    # FIX 2: Reorganizar columnas con estructura clara
+    # Renombrar PRIORITY a PRIORIDAD con valores explicados
+    if 'PRIORITY' in df_highlight.columns:
+        df_highlight['PRIORIDAD'] = df_highlight['PRIORITY'].apply(
+            lambda x: f"Alta ({int(x)})" if pd.notna(x) and x >= 3 else (f"Media ({int(x)})" if pd.notna(x) and x >= 2 else f"Baja ({int(x)})" if pd.notna(x) else "")
+        )
+    
+    # Renombrar RAZON_SOCIAL_NUEVA
+    if '🏢 RAZON_SOCIAL_NUEVA' in df_highlight.columns:
+        df_highlight['🏢 RAZÓN SOCIAL'] = df_highlight['🏢 RAZON_SOCIAL_NUEVA']
+    
+    # Select highlight columns - ORGANIZED with clear structure
+    highlight_cols = []
+    
+    # Sección 1: Información básica
+    for col in ["NOMBRE CLIENTE", "CONSUMO", "PRIORIDAD"]:
+        if col in df_highlight.columns:
+            highlight_cols.append(col)
+    
+    # Sección 2: Datos nuevos encontrados
+    for col in ["📞 TEL_NUEVO", "📧 EMAIL_NUEVO", "🏢 RAZÓN SOCIAL", "RESULTADO"]:
+        if col in df_highlight.columns:
+            highlight_cols.append(col)
+    
+    # Sección 3: Datos originales
+    for col in ["TELEFONO 1", "MAIL ", "CIF/NIF", "CIF_NIF", "CIF", "DIRECCIÓN CLIENTE", "POBLACIÓN CLIENTE"]:
+        if col in df_highlight.columns and col not in highlight_cols:
+            highlight_cols.append(col)
+    
+    # Use available columns
+    df_highlight = df_highlight[highlight_cols].copy()
     
     # OBSERVACIONES: NEVER modify - must remain exactly as input
     # (removed truncation to preserve original)
@@ -437,12 +466,34 @@ def write_excel(
     df_technical = df_all.copy()
     
     # ============================================
+    # FIX 3: Añadir fila de resumen al inicio de LEADS ENRIQUECIDOS
+    # ============================================
+    total_received = len(df_all)
+    red_count = len(red_df_indices)
+    analyzed_count = len(df_highlight)
+    # Contar leads con datos nuevos (RESULTADO no es "❌ Sin datos nuevos")
+    if 'RESULTADO' in df_highlight.columns:
+        with_new_data = (df_highlight['RESULTADO'] != '❌ Sin datos nuevos').sum()
+    else:
+        with_new_data = 0
+    
+    # Calcular descartadas por baja prioridad (total - red - analizadas)
+    low_priority_count = total_received - red_count - analyzed_count
+    
+    summary_text = f"RESUMEN: {total_received} empresas recibidas | {red_count} descartadas (fila roja) | {low_priority_count} descartadas (baja prioridad) | {analyzed_count} analizadas | {with_new_data} con datos nuevos"
+    
+    # Crear DataFrame con resumen como primera fila (merge todas las columnas en la primera)
+    summary_row = {col: summary_text if col == highlight_cols[0] else '' for col in highlight_cols}
+    summary_df = pd.DataFrame([summary_row])
+    df_highlight_with_summary = pd.concat([summary_df, df_highlight], ignore_index=True)
+    
+    # ============================================
     # Write Excel with 3 sheets
     # ============================================
     # First, write all sheets using pandas
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         df_original.to_excel(writer, sheet_name='BBDD ORIGINAL', index=False)
-        df_highlight.to_excel(writer, sheet_name='LEADS ENRIQUECIDOS', index=False)
+        df_highlight_with_summary.to_excel(writer, sheet_name='LEADS ENRIQUECIDOS', index=False)
         df_technical.to_excel(writer, sheet_name='DATOS_TÉCNICOS', index=False)
     
     # Now apply formatting
@@ -537,12 +588,23 @@ def write_excel(
     _auto_adjust_column_widths(ws_original)
     
     # ============================================
-    # Format HOJA 2: Headers bold, clean white background
+    # Format HOJA 2: Headers bold, clean white background, summary row
     # ============================================
     ws_highlight = wb['LEADS ENRIQUECIDOS']
     
-    # Make headers bold
-    for cell in ws_highlight[1]:
+    # FIX 3: Format summary row (row 1) - bold, background color, merged cells
+    from openpyxl.styles import PatternFill, Alignment
+    summary_fill = PatternFill(start_color="FFE6E6FA", end_color="FFE6E6FA", fill_type="solid")  # Lavender
+    
+    # Merge cells in row 1 for summary (span all columns)
+    ws_highlight.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(highlight_cols))
+    summary_cell = ws_highlight.cell(row=1, column=1)
+    summary_cell.fill = summary_fill
+    summary_cell.font = Font(bold=True, size=11)
+    summary_cell.alignment = Alignment(horizontal='left', vertical='center')
+    
+    # Make headers bold (row 2, since row 1 is summary)
+    for cell in ws_highlight[2]:
         cell.font = Font(bold=True)
     
     # Auto-adjust widths
