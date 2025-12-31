@@ -54,6 +54,17 @@ class Tier1Enricher:
         )
         self.phone_finder_fallback = WebScraperPhoneFinder()
         self.phone_validator = LibPhoneValidator(region="ES")
+        
+        # Tavily client for fallback (optional)
+        self.tavily_client = None
+        tavily_key = os.getenv("TAVILY_API_KEY")
+        if tavily_key:
+            try:
+                from tavily import TavilyClient
+                self.tavily_client = TavilyClient(api_key=tavily_key)
+                self.logger.info("Tavily client initialized for fallback")
+            except Exception as e:
+                self.logger.warning(f"Could not initialize Tavily client: {e}")
 
     @staticmethod
     def _now_iso() -> str:
@@ -160,7 +171,7 @@ class Tier1Enricher:
                     except Exception as tavily_exc:
                         self.logger.warning(f"Tavily fallback failed: {tavily_exc}")
                 
-                # Fallback 2: Try web scraper if Tavily didn't work
+                # Fallback 2: Try web scraper if Tavily didn't work or wasn't available
                 if phone_result is None or not phone_result.phone:
                     phone_result = self.phone_finder_fallback.find(
                         company_name=company_name or razon_social or "",
