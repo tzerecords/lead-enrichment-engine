@@ -41,12 +41,20 @@ if 'processing_error' not in st.session_state:
     st.session_state.processing_error = None
 if 'processed_files' not in st.session_state:
     st.session_state.processed_files = []
-if 'stop_processing' not in st.session_state:
-    st.session_state.stop_processing = False
+if 'stop_requested' not in st.session_state:
+    st.session_state.stop_requested = False
 if 'current_lead' not in st.session_state:
     st.session_state.current_lead = ""
 if 'current_progress' not in st.session_state:
     st.session_state.current_progress = 0.0
+if 'total_leads' not in st.session_state:
+    st.session_state.total_leads = 0
+if 'processed_count' not in st.session_state:
+    st.session_state.processed_count = 0
+if 'phones_found' not in st.session_state:
+    st.session_state.phones_found = 0
+if 'emails_found' not in st.session_state:
+    st.session_state.emails_found = 0
 
 
 def check_api_keys():
@@ -195,11 +203,27 @@ if uploaded_file is not None:
             df_preview = pd.read_excel(tmp_path, engine="openpyxl")
             num_rows = len(df_preview)
             st.session_state.num_rows = num_rows
+            st.session_state.total_leads = num_rows
+            
+            # Calculate priority and red row counts
+            from src.core.excel_processor import read_excel
+            from src.core.priority_engine import PriorityEngine
+            
+            df_full, metadata = read_excel(Path(tmp_path))
+            red_count = len(metadata.get("red_df_indices", []))
+            
+            # Calculate priorities for non-red rows
+            mask_process = ~df_full.get("_IS_RED_ROW", False)
+            df_process = df_full[mask_process].copy()
+            priority_engine = PriorityEngine()
+            priorities = priority_engine.calculate_priorities(df_process)
+            priority_count = (priorities >= 2).sum()
             
             # Cleanup temp file
             os.unlink(tmp_path)
             
-            st.success(f"✅ Archivo cargado: **{uploaded_file.name}** ({num_rows} leads)")
+            st.success(f"✅ Archivo cargado: **{uploaded_file.name}**")
+            st.info(f"📊 {num_rows} empresas encontradas ({priority_count} prioritarias, {red_count} ignoradas)")
             
         except Exception as e:
             st.error(f"❌ Error al leer el archivo: {str(e)}")
@@ -226,6 +250,14 @@ with st.expander("ℹ️ Cómo funciona", expanded=False):
     - 🟡 Amarillo: No se encontraron datos nuevos
     - 🔴 Rojo: Lead ignorado (fila original roja)
     """)
+    
+    # Links a APIs
+    with st.expander("🔗 Gestionar APIs"):
+        st.markdown("""
+        - [Google Cloud Console](https://console.cloud.google.com/google/maps-apis/metrics?authuser=5&project=project-5bcbc3d3-652e-4f80-876&supportedpurview=project)
+        - [Tavily Dashboard](https://app.tavily.com/home)
+        - [OpenAI API Keys](https://platform.openai.com/settings/proj_MR51aZ02sjbHHaLo7MRk1xN8/api-keys)
+        """)
 
 # Estado de APIs - discreto
 api_status = get_api_status_text()
@@ -233,29 +265,40 @@ st.caption(f"Estado de APIs: {api_status}")
 
 st.markdown("---")
 
+# Callback para botón DETENER
+def request_stop():
+    """Callback para solicitar detener el procesamiento."""
+    st.session_state.stop_requested = True
+    st.session_state.processing = False
+
 # Botón PROCESAR - único y grande
 if uploaded_file is not None and not st.session_state.processing:
     if st.button("🚀 PROCESAR", type="primary", use_container_width=True):
         st.session_state.processing = True
+        st.session_state.stop_requested = False
         st.rerun()
 
 # Processing
 if st.session_state.processing and uploaded_file is not None:
-    st.markdown("### ⚙️ Procesando...")
+    st.subheader("⚙️ Procesando...")
     
-    # Progress bar with animation
-    progress_bar = st.progress(0)
+    # Progress bar with text
+    progress_bar = st.progress(0.0, text="Iniciando...")
     status_text = st.empty()
-    lead_text = st.empty()
     
-    # STOP button
-    col1, col2 = st.columns([3, 1])
+    # Metrics columns
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        metric_processed = st.metric("Procesados", f"{st.session_state.processed_count}/{st.session_state.total_leads}")
     with col2:
-        if st.button("⏹️ DETENER", type="secondary", use_container_width=True):
-            st.session_state.stop_processing = True
-            st.session_state.processing = False
-            st.warning("⏸️ Procesamiento detenido por el usuario")
-            st.rerun()
+        metric_phones = st.metric("Teléfonos encontrados", st.session_state.phones_found)
+    with col3:
+        metric_emails = st.metric("Emails encontrados", st.session_state.emails_found)
+    
+    # STOP button centered
+    _, col_btn, _ = st.columns([2, 1, 2])
+    with col_btn:
+        st.button("⏹️ DETENER", on_click=request_stop, type="secondary", use_container_width=True)
     
     # Create temporary files
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp_input:
@@ -265,38 +308,65 @@ if st.session_state.processing and uploaded_file is not None:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp_output:
         tmp_output_path = Path(tmp_output.name)
     
-    # Clear previous results and reset stop flag
+    # Clear previous results and reset counters
     st.session_state.processing_result = None
     st.session_state.processing_error = None
     st.session_state.processing_output_path = None
-    st.session_state.stop_processing = False
+    st.session_state.stop_requested = False
+    st.session_state.processed_count = 0
+    st.session_state.phones_found = 0
+    st.session_state.emails_found = 0
+    
+    # Progress callback function
+    def update_progress(current: int, total: int, company_name: str = ""):
+        """Update progress bar and metrics."""
+        if total > 0:
+            progress = (current + 1) / total
+            progress_text = f"Lead {current + 1}/{total}"
+            if company_name:
+                progress_text += f" - {company_name[:40]}"
+            progress_bar.progress(progress, text=progress_text)
+            
+            # Update metrics
+            st.session_state.processed_count = current + 1
+            metric_processed.metric("Procesados", f"{current + 1}/{total}")
+    
+    # Check stop callback
+    def check_stop() -> bool:
+        """Check if stop was requested."""
+        return st.session_state.get('stop_requested', False)
     
     try:
-        # Show initial progress with spinner for visual feedback
-        with st.spinner("🔄 Procesando archivo..."):
-            status_text.info("📊 Analizando archivo y calculando prioridades...")
-            progress_bar.progress(0.1)
-            lead_text.text("Iniciando procesamiento...")
-            
-            # Process file with default configuration (this will take time)
-            df_result, metrics = process_file(
-                input_path=tmp_input_path,
-                output_path=tmp_output_path,
-                tiers=[1, 3],  # Tier2 se ejecuta automáticamente si hay PRIORITY>=2
-                enable_email_research=True,  # Siempre activo para Tier2
-                force_tier2=False  # Nunca forzar
-            )
-            
-            # Check if stopped
-            if st.session_state.stop_processing:
-                st.warning("⏸️ Procesamiento detenido")
-                st.session_state.processing = False
-                st.rerun()
+        # Show initial progress
+        status_text.info("📊 Analizando archivo y calculando prioridades...")
+        progress_bar.progress(0.0, text="Iniciando...")
+        
+        # Process file with default configuration (this will take time)
+        df_result, metrics = process_file(
+            input_path=tmp_input_path,
+            output_path=tmp_output_path,
+            tiers=[1, 3],  # Tier2 se ejecuta automáticamente si hay PRIORITY>=2
+            enable_email_research=True,  # Siempre activo para Tier2
+            force_tier2=False,  # Nunca forzar
+            progress_callback=update_progress,
+            check_stop_callback=check_stop
+        )
+        
+        # Check if stopped
+        if st.session_state.stop_requested:
+            st.warning("⏸️ Procesamiento detenido por el usuario")
+            st.session_state.processing = False
+            st.rerun()
+        
+        # Update final metrics
+        phones_count = metrics.get("phone_found", 0)
+        emails_count = metrics.get("emails_found", 0)
+        metric_phones.metric("Teléfonos encontrados", phones_count)
+        metric_emails.metric("Emails encontrados", emails_count)
         
         # Final progress
-        progress_bar.progress(1.0)
+        progress_bar.progress(1.0, text="✅ Completado!")
         status_text.success("✅ Procesamiento completado!")
-        lead_text.empty()
         
         # Store results
         st.session_state.processing_result = {

@@ -75,6 +75,7 @@ def run_pipeline(
     enricher = Tier1Enricher(config_path=config_path)
 
     records = df_process.to_dict(orient="records")
+    total_leads = len(records)
     
     # Debug: Log BEFORE enrichment
     logger.info(f"BEFORE Tier1: Sample record keys: {list(records[0].keys()) if records else 'NO RECORDS'}")
@@ -83,7 +84,24 @@ def run_pipeline(
         logger.info(f"BEFORE Tier1: CIF/NIF={sample.get('CIF/NIF')}, CIF={sample.get('CIF')}, "
                    f"TELEFONO 1={sample.get('TELEFONO 1')}, NOMBRE CLIENTE={sample.get('NOMBRE CLIENTE')}")
     
+    # Enrich with progress callback
     batch_report = enricher.enrich_batch(records)
+    
+    # Update progress for each lead
+    if progress_callback:
+        for i, record in enumerate(records):
+            # Check stop
+            if check_stop_callback and check_stop_callback():
+                logger.info("Stop requested by user during Tier1 enrichment")
+                raise KeyboardInterrupt("Processing stopped by user")
+            
+            company_name = (
+                str(record.get("NOMBRE CLIENTE", "") or "").strip() or
+                str(record.get("NOMBRE_CLIENTE", "") or "").strip() or
+                str(record.get("RAZON_SOCIAL", "") or "").strip() or
+                ""
+            )
+            progress_callback(i, total_leads, company_name)
 
     # Debug: Log AFTER enrichment
     logger.info(f"AFTER Tier1: Sample record keys: {list(records[0].keys()) if records else 'NO RECORDS'}")
