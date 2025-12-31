@@ -443,6 +443,29 @@ def write_excel(
     # Use available columns
     df_highlight = df_highlight[highlight_cols].copy()
     
+    # FIX: Rename columns with descriptive headers explaining each output
+    column_descriptions = {
+        "NOMBRE CLIENTE": "NOMBRE CLIENTE",
+        "CONSUMO": "CONSUMO (MWh)",
+        "PRIORIDAD": "PRIORIDAD (Alta=3, Media=2, Baja=1)",
+        "📞 TEL_NUEVO": "📞 TELÉFONO NUEVO (encontrado con Google/Tavily)",
+        "📧 EMAIL_NUEVO": "📧 EMAIL NUEVO (encontrado con Tavily)",
+        "🏢 RAZÓN SOCIAL": "🏢 RAZÓN SOCIAL NUEVA (encontrada con Google/Tavily)",
+        "RESULTADO": "RESULTADO (qué datos nuevos se encontraron)",
+        "TELEFONO 1": "TELEFONO 1 (original del archivo)",
+        "MAIL ": "MAIL (original del archivo)",
+        "CIF/NIF": "CIF/NIF (original del archivo)",
+        "CIF_NIF": "CIF/NIF (original del archivo)",
+        "CIF": "CIF/NIF (original del archivo)",
+        "DIRECCIÓN CLIENTE": "DIRECCIÓN CLIENTE (original)",
+        "POBLACIÓN CLIENTE": "POBLACIÓN CLIENTE (original)"
+    }
+    
+    # Rename columns with descriptions
+    rename_dict = {col: column_descriptions.get(col, col) for col in highlight_cols if col in column_descriptions}
+    if rename_dict:
+        df_highlight = df_highlight.rename(columns=rename_dict)
+    
     # OBSERVACIONES: NEVER modify - must remain exactly as input
     # (removed truncation to preserve original)
     
